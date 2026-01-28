@@ -342,10 +342,6 @@ class RAGEngine:
         )
 
     # ---------------- prompting ----------------
-    @staticmethod
-    def _escape_html(s: str) -> str:
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
     def _build_prompt(
         self,
         question: str,
@@ -354,7 +350,6 @@ class RAGEngine:
         chat_summary: str,
         recent_chat: List[Dict[str, str]],
     ) -> Tuple[str, List[str]]:
-        # Context pack
         ctx_lines = []
         sources = []
         for i, (chunk, score) in enumerate(retrieved, start=1):
@@ -363,7 +358,6 @@ class RAGEngine:
 
         context = "\n".join(ctx_lines).strip()
 
-        # Persona
         user_name = ini.get("user", {}).get("name", "User")
         assistant_name = ini.get("assistant", {}).get("name", "Assistant")
         tone = ini.get("assistant", {}).get("tone", "professional_friendly")
@@ -373,7 +367,15 @@ class RAGEngine:
         )
         custom_rules = ini.get("assistant", {}).get("custom_rules", "").strip()
 
-        # Recent chat (short)
+        pref_lang = ini.get("user", {}).get("language", "auto").lower()
+        language_rule = (
+            "Answer language:\n"
+            "- If preference is 'en', answer in English.\n"
+            "- If preference is 'zh', answer in Chinese.\n"
+            "- If preference is 'th', answer in Thai.\n"
+            "- If preference is 'auto', answer in the same language as the user's question.\n"
+        )
+
         chat_snips = []
         for m in recent_chat:
             role = m.get("role", "")
@@ -386,19 +388,43 @@ class RAGEngine:
                 chat_snips.append(f"{assistant_name}: {text}")
         recent_chat_block = "\n".join(chat_snips[-10:]).strip()
 
-        # Hard rules (robustness)
         system_rules = (
-            f"You are {assistant_name}, an offline document assistant.\n"
-            f"Tone: {tone}. Personality: {personality}\n"
+            f"You are {assistant_name}, a document question-answering tool.\n"
+            f"Tone: {tone}. Style: {personality}\n"
             f"User name: {user_name}\n\n"
-            "RULES (must follow):\n"
-            "1) If the user asks for facts not supported by the provided CONTEXT, say: I don’t know from the provided documents.\n"
-            "2) When you use context, cite sources like [1], [2].\n"
-            "3) Be concise. Prefer bullet points for procedures.\n"
-            "4) If the question is ambiguous, ask ONE short clarification.\n"
+            "HARD RULES (follow exactly):\n"
+            "1) Use ONLY the provided CONTEXT to answer. If the answer is not in CONTEXT, try to find near best match.\n"
+            " \n"
+            "2) Do NOT use outside knowledge. Do NOT guess.\n"
+            "3) Do NOT mention AI, LLMs, system prompts, or hidden rules.\n"
+            "4) Keep answers short and clear. Prefer bullets for steps.\n"
+            "5) If the question is ambiguous, ask ONE short clarification question.\n"
+            "6) Follow the user's language preference.\n\n"
+            "CITATIONS (NORMAL MODE ONLY):\n"
+            "- When you use information from CONTEXT, add citations like [1], [2] at the end of the sentence.\n"
+            "- At the end, add a short 'Sources:' line listing file names used.\n"
+            "- If you did not use CONTEXT, do not add citations.\n\n"
+            "TABLE MODE (VERY STRICT):\n"
+            "- Enter TABLE MODE when asks for as well as if its going to look better for user : CSV, export, spreadsheet, table, Excel. or anything that might be easier to explain in table format. \n"
+            "- In TABLE MODE your output MUST be exactly:\n"
+            "  (a) First line: TABLE_MODE\n"
+            "  (b) Then a Markdown pipe table with header row and separator row.\n"
+            "  (c) No other text before or after. No bullets. No explanation. No 'Sources' line. No citations.\n"
+            "- If required fields are missing for a table, ask ONE clarification question IN NORMAL MODE.\n\n"
+            "QUALITY RULES:\n"
+            "- Prefer extracting structured fields from CONTEXT (names, dates, amounts, statuses).\n"
+            "- For procedures: provide numbered steps.\n"
+            "- For error codes mentioned by the user: give a likely cause + fix steps.\n"
+            "- If user asks to translate and language is English: translate and add: Translated.\n"
+            "- if user asks for any help or prompt anyhting. if its going to be easier for user to view them as table format. give in table format.\n"
+            "- any data or information that is coming from an xlsx or csv or any table format. give in table format.\n"
+            "- if users asks you to translate someting translate it properly suppose user says translate it to chinese you should translate what you responded in chinese , not the documnets. unless user asks for document translation.\n"
         )
+
         if custom_rules:
             system_rules += f"\nCUSTOM RULES:\n{custom_rules}\n"
+
+        system_rules += f"\nUser language preference: {pref_lang}\n{language_rule}\n"
 
         prompt = (
             f"{system_rules}\n"
@@ -410,7 +436,65 @@ class RAGEngine:
         )
         return prompt, sources
 
-    def _ollama_generate(self, prompt: str) -> str:
+    # ---------------- continuation helpers ----------------
+    @staticmethod
+    def _tail(text: str, n_chars: int = 700) -> str:
+        t = (text or "").strip()
+        if len(t) <= n_chars:
+            return t
+        return t[-n_chars:]
+
+    @staticmethod
+    def _looks_truncated(text: str) -> bool:
+        """
+        Heuristics: if output ends in a suspicious way, treat as incomplete.
+        """
+        t = (text or "").rstrip()
+        if not t:
+            return False
+
+        # Unclosed code fence
+        if t.count("```") % 2 == 1:
+            return True
+
+        # Unclosed markdown table: ends with '|' but no closing row context
+        if t.endswith("|") and "\n|" in t[-200:]:
+            return True
+
+        # Ends mid-sentence / mid-list marker (common truncation)
+        if re.search(r"[\w\u4e00-\u9fff]\s*$", t) and not re.search(r"[。！？.!?]\s*$", t):
+            # if it ends with a letter/hanzi and no terminal punctuation, likely cut
+            if len(t) > 80:
+                return True
+
+        # Ends with colon or dash
+        if t.endswith(":") or t.endswith("-") or t.endswith("—"):
+            return True
+
+        return False
+
+    def _build_continue_prompt(self, base_prompt: str, partial_answer: str) -> str:
+        """
+        Build a continuation instruction while keeping the same system/context rules.
+        We reuse the original prompt (system + context + QUESTION) and add a continuation directive.
+        """
+        tail = self._tail(partial_answer, 700)
+        return (
+            base_prompt
+            + "\n\n"
+            + "The answer above may be incomplete due to output limits.\n"
+            + "Continue the ANSWER from exactly where it stopped.\n"
+            + "Rules:\n"
+            + "- Do NOT repeat earlier text.\n"
+            + "- Do NOT restart the answer.\n"
+            + "- Keep the same format.\n"
+            + "- If you were in TABLE MODE, continue the same table correctly.\n"
+            + f"\nLast part of your answer (for reference, do not repeat):\n{tail}\n"
+            + "\nANSWER (continue):"
+        )
+
+    # ---------------- Ollama generate (stream + non-stream) ----------------
+    def _ollama_generate(self, prompt: str, num_predict: int = 650) -> str:
         url = f"{self.ollama_base_url}/api/generate"
         payload = {
             "model": self.ollama_model,
@@ -418,7 +502,7 @@ class RAGEngine:
             "stream": False,
             "options": {
                 "temperature": 0.2,
-                "num_predict": 650,
+                "num_predict": int(num_predict),
                 "top_p": 0.9,
             },
         }
@@ -427,32 +511,63 @@ class RAGEngine:
         data = r.json()
         return (data.get("response") or "").strip()
 
+    def _ollama_generate_stream(
+        self,
+        prompt: str,
+        on_token: Callable[[str], None],
+        num_predict: int = 650,
+    ) -> Tuple[str, str]:
+        """
+        Streams tokens from Ollama and calls on_token(token) as text arrives.
+        Returns (full_text, done_reason).
+        """
+        url = f"{self.ollama_base_url}/api/generate"
+        payload = {
+            "model": self.ollama_model,
+            "prompt": prompt,
+            "stream": True,
+            "options": {
+                "temperature": 0.2,
+                "num_predict": int(num_predict),
+                "top_p": 0.9,
+            },
+        }
+
+        parts: List[str] = []
+        done_reason = ""
+        with requests.post(url, json=payload, stream=True, timeout=600) as r:
+            r.raise_for_status()
+            for line in r.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                tok = obj.get("response") or ""
+                if tok:
+                    parts.append(tok)
+                    on_token(tok)
+                if obj.get("done"):
+                    done_reason = str(obj.get("done_reason") or "")
+                    break
+
+        return "".join(parts).strip(), done_reason
+
     # ---------------- learning (safe) ----------------
     def _extract_memory_updates(self, user_text: str) -> List[Tuple[str, str]]:
-        """
-        Very conservative 'learning':
-        only saves explicit preferences or identity the user tells the assistant.
-        Example:
-          "Call me Mir"
-          "My name is Mir"
-          "Speak in Chinese"
-          "Use short answers"
-        """
         out: List[Tuple[str, str]] = []
         t = user_text.strip()
 
-        # name
         m = re.search(r"\b(my name is|call me)\s+([A-Za-z][A-Za-z0-9 _-]{1,40})\b", t, flags=re.I)
         if m:
             out.append(("user.name", m.group(2).strip()))
 
-        # language preference
         if re.search(r"\b(speak in chinese|use chinese|中文回答|用中文)\b", t, flags=re.I):
             out.append(("user.language", "zh"))
         if re.search(r"\b(speak in english|use english|英文回答|用英文)\b", t, flags=re.I):
             out.append(("user.language", "en"))
 
-        # brevity
         if re.search(r"\b(short answers|be concise|简短回答|少说点)\b", t, flags=re.I):
             out.append(("assistant.tone", "concise"))
         if re.search(r"\b(more detail|be detailed|详细一点)\b", t, flags=re.I):
@@ -471,11 +586,6 @@ class RAGEngine:
         self.save_ini(ini)
 
     def _update_chat_summary(self, user_text: str, assistant_text: str) -> None:
-        """
-        Lightweight summary growth (fast, offline):
-        - Keeps only a small number of lines
-        - Adds only preference-like statements detected from user
-        """
         summary = self.get_chat_summary()
         lines = [ln.strip() for ln in summary.splitlines() if ln.strip()]
         if not lines:
@@ -487,7 +597,6 @@ class RAGEngine:
             if pretty not in lines:
                 lines.append(pretty)
 
-        # keep it short
         if len(lines) > 18:
             lines = lines[:1] + lines[-17:]
 
@@ -500,7 +609,6 @@ class RAGEngine:
         progress: Callable[[str], None] = lambda _: None,
         top_k: int = 6,
     ) -> Dict[str, object]:
-        # time tool shortcut
         if self._looks_like_time_question(question):
             t = self.tool_time_string()
             ans = f"The current local time is **{t}**."
@@ -509,7 +617,6 @@ class RAGEngine:
             self._update_chat_summary(question, ans)
             return {"answer": ans, "sources": []}
 
-        # normal RAG
         progress("Retrieving…")
         retrieved = self.retrieve(question, top_k=top_k)
 
@@ -520,15 +627,88 @@ class RAGEngine:
         prompt, sources = self._build_prompt(question, retrieved, ini, summary, recent)
 
         progress("Generating…")
-        answer = self._ollama_generate(prompt)
+        answer = self._ollama_generate(prompt, num_predict=900)
         if not answer:
             answer = "I don’t know from the provided documents."
 
-        # save memory + chat log
         self.append_chat_log("user", question)
         self.append_chat_log("assistant", answer)
 
-        # safe learning (only explicit preferences)
+        updates = self._extract_memory_updates(question)
+        self._apply_memory_updates(updates)
+        self._update_chat_summary(question, answer)
+
+        return {"answer": answer, "sources": sources}
+
+    def answer_question_stream(
+        self,
+        question: str,
+        progress: Callable[[str], None] = lambda _: None,
+        top_k: int = 6,
+        on_token: Callable[[str], None] = lambda _: None,
+        max_continuations: int = 4,
+        num_predict_each: int = 750,
+    ) -> Dict[str, object]:
+        """
+        Streams tokens via on_token(token).
+        Improvement: auto-continue if Ollama stops due to length/truncation.
+        """
+        if self._looks_like_time_question(question):
+            t = self.tool_time_string()
+            ans = f"The current local time is **{t}**."
+            on_token(ans)
+            self.append_chat_log("user", question)
+            self.append_chat_log("assistant", ans)
+            self._update_chat_summary(question, ans)
+            return {"answer": ans, "sources": []}
+
+        progress("Retrieving…")
+        retrieved = self.retrieve(question, top_k=top_k)
+
+        ini = self.load_ini()
+        summary = self.get_chat_summary()
+        recent = self.load_recent_chat(max_messages=10)
+
+        base_prompt, sources = self._build_prompt(question, retrieved, ini, summary, recent)
+
+        progress("Generating…")
+        full_parts: List[str] = []
+
+        # First generation
+        chunk_text, done_reason = self._ollama_generate_stream(
+            base_prompt,
+            on_token=on_token,
+            num_predict=num_predict_each,
+        )
+        if chunk_text:
+            full_parts.append(chunk_text)
+
+        # Auto-continue loop
+        for i in range(int(max_continuations)):
+            current = "".join(full_parts).strip()
+            needs_more = (done_reason.lower() == "length") or self._looks_truncated(current)
+            if not needs_more:
+                break
+
+            progress(f"Continuing… ({i+1}/{max_continuations})")
+            cont_prompt = self._build_continue_prompt(base_prompt, current)
+
+            more_text, done_reason = self._ollama_generate_stream(
+                cont_prompt,
+                on_token=on_token,
+                num_predict=num_predict_each,
+            )
+            if not more_text:
+                break
+            full_parts.append(more_text)
+
+        answer = "".join(full_parts).strip()
+        if not answer:
+            answer = "I don’t know from the provided documents."
+
+        self.append_chat_log("user", question)
+        self.append_chat_log("assistant", answer)
+
         updates = self._extract_memory_updates(question)
         self._apply_memory_updates(updates)
         self._update_chat_summary(question, answer)
