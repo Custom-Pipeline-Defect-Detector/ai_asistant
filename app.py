@@ -2,11 +2,11 @@ import os
 import sys
 import traceback
 from pathlib import Path
+
 # --- ADD THIS near the top of app.py (imports) ---
 import subprocess
 import time
 import requests
-
 
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import (
@@ -36,12 +36,26 @@ INDEX_DIR = DATA_DIR / "index"
 LOG_DIR = DATA_DIR / "logs"
 
 SUPPORTED_EXTS = {
-    ".pdf", ".docx", ".txt", ".md",
-    ".html", ".htm", ".csv", ".json",
-    ".rtf", ".xlsx", ".pptx", ".doc",
-    ".odt", ".ods", ".odp", ".epub",
-    ".xml", ".yml", ".yaml", ".tsv",
-    ".tex", ".mdx", ".csvx", ".ts"
+    # text-like
+    ".txt", ".md", ".mdx", ".log", ".ini", ".cfg", ".conf", ".env", ".xml",
+    ".yml", ".yaml", ".tsv", ".tex",
+    ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cs",
+    ".go", ".rs", ".rb", ".php", ".sql", ".sh", ".bat", ".ps1",
+    ".toml", ".gitignore",
+
+    # office + common
+    ".pdf",
+    ".docx", ".doc", ".odt",
+    ".xlsx", ".xls", ".xlsm", ".xltx", ".xltm", ".ods",
+    ".pptx", ".ppt", ".ppsx", ".potx", ".odp",
+    ".csv", ".json", ".jsonl", ".ndjson",
+    ".html", ".htm",
+    ".rtf",
+    ".epub",
+
+    # images (OCR optional)
+    ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
 }
 
 APP_ICON_ICO = BASE_DIR / "app.ico"
@@ -68,10 +82,19 @@ def collect_auto_docs() -> list[str]:
     return docs
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name, "1" if default else "0").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
 class AppController(QWidget):
     def __init__(self):
         super().__init__()
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+        # Force OCR ON always (and bilingual by default)
+        os.environ["ENABLE_OCR"] = "1"
+        os.environ.setdefault("OCR_LANG", "auto")  # or "eng+chi_sim" if you prefer fixed
+
 
         self.setWindowFlags(
             Qt.FramelessWindowHint |
@@ -83,7 +106,7 @@ class AppController(QWidget):
         self.setMouseTracking(True)
 
         self.setWindowTitle("Document AI Assistant")
-        self.setMinimumSize(600, 600)
+        self.setMinimumSize(800, 800)
 
         # ---------- resize config ----------
         self._resize_margin = 6
@@ -163,7 +186,13 @@ class AppController(QWidget):
 
         self.ui.send_button.clicked.connect(self.on_send)
 
-        self.ui.update_status("Ready. Place documents in D:\\offline_doc_assistant\\index")
+        # show OCR/LO settings hint in status (driven by env vars)
+        ocr_on = _bool_env("ENABLE_OCR", True)
+        lo_on = _bool_env("ENABLE_LIBREOFFICE", True)
+        self.ui.update_status(
+            "Ready. Place documents in D:\\offline_doc_assistant\\index "
+            f"(OCR={'ON' if ocr_on else 'OFF'}, LibreOffice={'ON' if lo_on else 'OFF'})"
+        )
         self._apply_layout()
 
     # =========================
@@ -380,6 +409,41 @@ class AppController(QWidget):
         self._thread.finished.connect(lambda: setattr(self, "_thread", None))
         self._thread.start()
 
+    def _show_index_report_if_needed(self, res: dict):
+        """
+        Displays a small report when some docs fail extraction/indexing.
+        Expects rag_engine.build_index() to return:
+          - report: list[dict]
+          - failed_docs/indexed_docs/attempted_docs (optional but recommended)
+          - settings.enable_ocr (optional)
+        """
+        report = res.get("report", []) or []
+        if not report:
+            return
+
+        failed = [r for r in report if not r.get("ok")]
+        if not failed:
+            return
+
+        lines = []
+        for r in failed[:20]:
+            name = Path(r.get("source", "")).name or r.get("source", "")
+            msg = r.get("error") or r.get("warning") or "Unknown failure"
+            lines.append(f"- {name}: {msg}")
+
+        settings = res.get("settings", {}) or {}
+        hints = []
+        if not settings.get("enable_ocr", _bool_env("ENABLE_OCR", False)):
+            hints.append("Tip: set ENABLE_OCR=1 to index scanned PDFs/images (after installing OCR deps).")
+        if not settings.get("enable_libreoffice", _bool_env("ENABLE_LIBREOFFICE", True)):
+            hints.append("Tip: set ENABLE_LIBREOFFICE=1 (and install LibreOffice) to index .doc/.odt/.ods/.odp/.ppt/.xls.")
+
+        msg = "Some files were not indexed:\n\n" + "\n".join(lines)
+        if hints:
+            msg += "\n\n" + "\n".join(hints)
+
+        QMessageBox.information(self, "Indexing report", msg)
+
     def _ensure_index(self, after_ok=None):
         files = collect_auto_docs()
         if not files:
@@ -410,7 +474,20 @@ class AppController(QWidget):
         def on_ok(res):
             docs = res.get("docs", len(files))
             chunks = res.get("chunks", 0)
-            self.ui.update_status(f"Index ready. Docs: {docs}, Chunks: {chunks}")
+
+            indexed_docs = res.get("indexed_docs", docs)
+            attempted_docs = res.get("attempted_docs", indexed_docs)
+            failed_docs = res.get("failed_docs", max(0, attempted_docs - indexed_docs))
+
+            self.ui.update_status(
+                f"Index ready. Selected: {docs}, Indexed: {indexed_docs}/{attempted_docs}, "
+                f"Failed: {failed_docs}, Chunks: {chunks}"
+            )
+
+            # NEW: show per-file report for partial failures
+            if failed_docs > 0:
+                self._show_index_report_if_needed(res)
+
             if after_ok:
                 after_ok(res)
 
@@ -437,7 +514,7 @@ class AppController(QWidget):
                 return self.rag.answer_question_stream(
                     q,
                     progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
-                    top_k=6,
+                    top_k=100,
                     on_token=lambda tok: self._thread.partial.emit(tok) if self._thread else None,
                 )
 
@@ -470,12 +547,15 @@ class AppController(QWidget):
         indexed = self.rag.get_indexed_docs()
         summary = self.rag.get_chat_summary()
 
+        ocr_on = _bool_env("ENABLE_OCR", True)
+        lo_on = _bool_env("ENABLE_LIBREOFFICE", True)
+        ocr_lang = os.environ.get("OCR_LANG", "eng")
+
         info = (
-            f"Auto docs folder: {AUTO_DOCS_DIR}\n"
-            f"Files found now: {len(docs)}\n"
-            f"Indexed docs: {len(indexed)}\n"
-            f"Index exists: {self.rag.index_exists()}\n\n"
-            f"AI Memory Summary:\n{summary}\n"
+            f"自动文档文件夹： {AUTO_DOCS_DIR}\n"
+            f"目前找到的文件：{len(docs)}\n"
+            f"已索引的文档： {len(indexed)}\n"
+            f"人工智能记忆摘要:\n{summary}\n"
         )
 
         dlg = self.ui.open_settings_dialog(info, current_lang)

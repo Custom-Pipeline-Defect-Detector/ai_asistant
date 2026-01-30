@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
-
+import os
 import faiss
 import numpy as np
 import requests
@@ -259,18 +259,59 @@ class RAGEngine:
         progress: Callable[[str], None] = lambda _: None,
         chunk_size: int = 1100,
         overlap: int = 220,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, object]:
         self._load_embedder()
 
+        # Optional runtime toggles (no UI changes required)
+        # Set environment variables to override:
+        #   ENABLE_OCR=0/1
+        #   OCR_LANG=eng+chi_sim (or eng+chi_sim+chi_tra)
+        #   ENABLE_LIBREOFFICE=0/1
+        enable_ocr = os.environ.get("ENABLE_OCR", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+        poppler_path = os.environ.get("POPPLER_PATH", "").strip() or None
+        pdf_ocr_max_pages_env = os.environ.get("PDF_OCR_MAX_PAGES", "").strip()
+        pdf_ocr_max_pages = int(pdf_ocr_max_pages_env) if pdf_ocr_max_pages_env.isdigit() else None
+
+        # Default OCR language: English + Simplified Chinese
+        ocr_lang = os.environ.get("OCR_LANG", "eng+chi_sim").strip() or "eng+chi_sim"
+        # Treat "auto" as bilingual OCR (so users don't accidentally lose Chinese support)
+        if ocr_lang.lower() == "auto":
+            ocr_lang = "eng+chi_sim"
+
+        enable_lo = os.environ.get("ENABLE_LIBREOFFICE", "1").strip().lower() in {"1", "true", "yes", "on"}
+
         progress("Loading documents…")
-        docs = load_documents([Path(p) for p in file_paths])
+        docs, report = load_documents(
+            [Path(p) for p in file_paths],
+            enable_ocr=enable_ocr,
+            ocr_lang=ocr_lang,
+            enable_libreoffice=enable_lo,
+            pdf_ocr_max_pages=pdf_ocr_max_pages,
+            poppler_path=poppler_path,
+        )
+
+        attempted = len(report)
+        succeeded = len(docs)
+        failed = attempted - succeeded
 
         if not docs:
-            raise RAGEngineError(
-                "No text could be extracted.\n"
-                "If PDFs are scanned images, OCR is required (not enabled).\n"
-                "If indexing Excel/PPT/HTML ensure deps are installed."
-            )
+            # Show the most useful errors first
+            lines = ["No text could be extracted from the selected files.\n"]
+            if attempted == 0:
+                lines.append("No valid files found.")
+            else:
+                lines.append("Top failures:")
+                for e in report[:10]:
+                    if e.ok:
+                        continue
+                    msg = e.error or e.warning or "Unknown failure"
+                    lines.append(f"- {Path(e.source).name}: {msg}")
+                lines.append("")
+                lines.append("Tips:")
+                lines.append("- For scanned PDFs/images: OCR is enabled by default. Ensure Tesseract + language packs are installed.")
+                lines.append("- For .doc/.odt/.ods/.odp/.ppt/.xls: install LibreOffice and keep ENABLE_LIBREOFFICE=1.")
+            raise RAGEngineError("\n".join(lines).strip())
 
         all_chunks: List[ChunkMetadata] = []
         for doc_i, d in enumerate(docs, start=1):
@@ -279,7 +320,7 @@ class RAGEngine:
                 all_chunks.append(ChunkMetadata(chunk_id=len(all_chunks), source=d["source"], text=ch))
 
         if not all_chunks:
-            raise RAGEngineError("No text chunks could be created.")
+            raise RAGEngineError("No text chunks could be created (documents were empty after extraction).")
 
         progress("Embedding…")
         texts = [c.text for c in all_chunks]
@@ -299,7 +340,20 @@ class RAGEngine:
         self._chunks = all_chunks
 
         progress("Index ready.")
-        return {"docs": len(file_paths), "chunks": len(all_chunks)}
+
+        return {
+            "docs": len(file_paths),
+            "indexed_docs": succeeded,
+            "attempted_docs": attempted,
+            "failed_docs": failed,
+            "chunks": len(all_chunks),
+            "report": [r.to_dict() for r in report],
+            "settings": {
+                "enable_ocr": enable_ocr,
+                "ocr_lang": ocr_lang,
+                "enable_libreoffice": enable_lo,
+            },
+        }
 
     def retrieve(self, query: str, top_k: int = 6) -> List[Tuple[ChunkMetadata, float]]:
         self._load_embedder()
@@ -607,7 +661,7 @@ class RAGEngine:
         self,
         question: str,
         progress: Callable[[str], None] = lambda _: None,
-        top_k: int = 6,
+        top_k: int = 200,
     ) -> Dict[str, object]:
         if self._looks_like_time_question(question):
             t = self.tool_time_string()
@@ -644,7 +698,7 @@ class RAGEngine:
         self,
         question: str,
         progress: Callable[[str], None] = lambda _: None,
-        top_k: int = 6,
+        top_k: int = 60,
         on_token: Callable[[str], None] = lambda _: None,
         max_continuations: int = 4,
         num_predict_each: int = 750,

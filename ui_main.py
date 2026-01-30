@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
-
-from PyQt5.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
+import os
+from PyQt5.QtCore import QEasingCurve, QEvent, QPropertyAnimation, Qt, QTimer
 from PyQt5.QtGui import QFont, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
 )
 
 from formatters import to_rich_html, parse_json_rows, md_table_to_grid
@@ -35,7 +36,7 @@ UI_STRINGS = {
         "title": "Document AI Assistant",
         "settings": "Settings",
         "greeting": "Nice to see you, {name}. What’s new?",
-        "input_placeholder": "Message Copilot",
+        "input_placeholder": "Ask me anything related to your documents, \nIf new documents were added, please rebuild the index from setting page.",
         "sources": "Sources",
         "status_start": "Starting…",
         "btn_rebuild": "Rebuild index now",
@@ -50,7 +51,7 @@ UI_STRINGS = {
         "title": "文档 AI 助手",
         "settings": "设置",
         "greeting": "很高兴见到你，{name}。有什么新消息？",
-        "input_placeholder": "输入消息",
+        "input_placeholder": "您可以询问任何与您的文档相关的问题。\n如果添加了新文档，请从设置页面重建索引。",
         "sources": "来源",
         "status_start": "启动中…",
         "btn_rebuild": "立即重建索引",
@@ -65,7 +66,7 @@ UI_STRINGS = {
         "title": "ผู้ช่วย AI เอกสาร",
         "settings": "การตั้งค่า",
         "greeting": "ยินดีที่ได้พบคุณ, {name}. มีอะไรใหม่บ้าง?",
-        "input_placeholder": "พิมพ์ข้อความ",
+        "input_placeholder": "คุณสามารถสอบถามฉันได้ทุกเรื่องที่เกี่ยวข้องกับเอกสารของคุณ\n หากมีการเพิ่มเอกสารใหม่ โปรดสร้างดัชนีใหม่จากหน้าการตั้งค่า",
         "sources": "แหล่งอ้างอิง",
         "status_start": "กำลังเริ่ม…",
         "btn_rebuild": "สร้างดัชนีใหม่ตอนนี้",
@@ -90,7 +91,6 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
 
         self.setModal(True)
-
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 
@@ -303,11 +303,28 @@ class MainWindow(QWidget):
         self.setAutoFillBackground(False)
 
         self._build_ui()
+
+        # ✅ ENTER = Send (Shift+Enter = newline)
+        self.input_box.installEventFilter(self)
+
         self._apply_style()
         self._apply_logo_size()
 
         self._apply_auto_scale()
         self._fade_in()
+
+    # ✅ ENTER-to-send handler
+    def eventFilter(self, obj, event):
+        if obj is self.input_box and event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                # Shift+Enter => newline
+                if event.modifiers() & Qt.ShiftModifier:
+                    return False
+                # Enter => send
+                self.send_button.click()
+                return True
+        return super().eventFilter(obj, event)
 
     # ---------- Logo sizing ----------
     def _apply_logo_size(self):
@@ -365,7 +382,7 @@ class MainWindow(QWidget):
 
         top_l.addWidget(self.logo_label, 0)
         top_l.addWidget(self.greeting, 1)
-        #top_l.addWidget(self.settings_button, 0, Qt.AlignRight)
+        # top_l.addWidget(self.settings_button, 0, Qt.AlignRight)
 
         # Transcript
         self.chat_transcript = QTextBrowser()
@@ -420,12 +437,16 @@ class MainWindow(QWidget):
         input_row.setContentsMargins(18, 14, 18, 14)
         input_row.setSpacing(12)
 
-        self.input_box = QTextBrowser()
+        # ✅ FIX: use QTextEdit (IME-friendly) + remove focus frame (no white border)
+        self.input_box = QTextEdit()
         self.input_box.setObjectName("inputBox")
+        self.input_box.setFrameStyle(QFrame.NoFrame)
+        self.input_box.setFocusPolicy(Qt.StrongFocus)
+        self.input_box.setInputMethodHints(Qt.ImhNone)
         self.input_box.setFixedHeight(64)
-        self.input_box.setTextInteractionFlags(Qt.TextEditorInteraction)
         self.input_box.setPlaceholderText("Message Copilot")
         self.input_box.setAttribute(Qt.WA_StyledBackground, True)
+        self.input_box.setAcceptRichText(False)
 
         self.send_button = QPushButton("➤")
         self.send_button.setObjectName("sendButton")
@@ -508,12 +529,18 @@ class MainWindow(QWidget):
                 border-radius: 26px;
             }
 
-            QTextBrowser#inputBox {
+            /* ✅ FIX: style QTextEdit (not QTextBrowser) + kill focus outline */
+            QTextEdit#inputBox {
                 background: transparent;
                 border: none;
+                outline: none;
                 color: #eef3ff;
                 font-size: 16px;
                 padding: 6px 6px;
+            }
+            QTextEdit#inputBox:focus {
+                border: none;
+                outline: none;
             }
 
             QPushButton#sendButton {
@@ -735,8 +762,6 @@ class MainWindow(QWidget):
         self.chat_transcript.setHtml("\n".join(blocks))
 
         # ✅ Smart scroll behavior:
-        # - if user scrolled up, keep their position (even while streaming)
-        # - if user is at bottom, keep following new tokens
         self._programmatic_scroll = True
         try:
             if should_stick:
