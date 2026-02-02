@@ -1326,6 +1326,7 @@ class AppController(QWidget):
             sources = [str(self.config.auto_docs_dir)]
 
         tools = [
+            {"type": "read_file", "args": {"path": "string"}}, 
             {"type": "list_dir", "args": {"path": "string"}, "when": "User wants to know what files/folders are inside a directory."},
             {"type": "find_files", "args": {"query": "string"}, "when": "User wants you to locate a file on the computer by name/keywords/pattern."},
             {"type": "add_source", "args": {"path": "string"}, "when": "User asks to add a folder so it will be indexed going forward."},
@@ -1338,9 +1339,14 @@ class AppController(QWidget):
 Your job: decide whether to call a LOCAL TOOL (filesystem or app control) or just answer.
 
 RULES:
+- If the user mentions a filename (e.g., "st10", "ST10.xlsx") but does NOT provide a folder path, choose find_files (NOT list_dir).
+- "what is in <file>" or "what are in <file>" means the user wants the file content, not the folder listing.
 - Output ONLY JSON. No markdown. No extra text.
 - Choose the single best action.
+-dont assume that user is asking for files or directories, only do so when its clear from the context.
+-if user ask a question first think what it could be then answer, dont go looking for files or directories unless its clear from the context.
 - If the user asks about folder contents OR gives a folder path, choose list_dir.
+-if the user asks what documents they have check the index folder, or show the files in index folder.
 - If the user asks you to locate a file anywhere on the computer, choose find_files.
 - If the user asks to add a folder to be indexed, choose add_source.
 - If none apply, choose answer.

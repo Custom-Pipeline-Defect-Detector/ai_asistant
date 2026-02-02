@@ -562,3 +562,18 @@
 2026-02-02 14:55:57,346 [INFO] RAGEngine initialized
 2026-02-02 14:57:56,990 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
 2026-02-02 14:57:57,781 [INFO] Use pytorch device_name: cuda
+2026-02-02 15:36:24,364 [INFO] RAGEngine initialized
+2026-02-02 15:37:17,212 [INFO] RAGEngine initialized
+2026-02-02 15:39:34,497 [INFO] RAGEngine initialized
+2026-02-02 15:39:42,010 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 15:39:42,828 [INFO] Use pytorch device_name: cuda
+2026-02-02 15:53:08,599 [INFO] RAGEngine initialized
+2026-02-02 15:57:10,498 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 15:57:11,331 [INFO] Use pytorch device_name: cuda
+2026-02-02 16:07:11,973 [INFO] RAGEngine initialized
+2026-02-02 16:07:24,867 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 16:07:25,755 [INFO] Use pytorch device_name: cuda
+2026-02-02 16:11:31,884 [INFO] RAGEngine initialized
+2026-02-02 16:12:47,412 [INFO] RAGEngine initialized
+2026-02-02 16:12:59,034 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 16:12:59,819 [INFO] Use pytorch device_name: cuda
