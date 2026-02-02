@@ -71,6 +71,17 @@ def _matches_globs(path: Path, globs: Iterable[str]) -> bool:
             return True
     return False
 
+def _walk_all_paths(root: Path) -> List[str]:
+    """Utility for simple wildcard matching over the base_dir tree (best-effort)."""
+    try:
+        root = Path(root)
+        if not root.exists():
+            return []
+        return [str(p) for p in root.rglob("*")]
+    except Exception:
+        return []
+
+
 
 def collect_auto_docs(config) -> list[str]:
     sources = (config.index_sources or []) + (config.extra_sources or [])
@@ -295,6 +306,7 @@ class AppController(QWidget):
 
         self.ui.send_button.clicked.connect(self.on_send)
         self.ui.add_file_button.clicked.connect(self.on_add_files)
+        self.ui.files_dropped.connect(self.on_files_dropped)
 
         self._update_status_ready()
         self._apply_layout()
@@ -803,6 +815,232 @@ class AppController(QWidget):
             on_ok=on_ok,
             on_err=lambda e: QMessageBox.critical(self, "Index Error", e),
         )
+
+    # ---------- Agent-ish helpers (path handling + visible progress) ----------
+    def on_files_dropped(self, paths: list):
+        """Handle drag & drop from the UI."""
+        if self._busy:
+            return
+        # treat dropped files like 'Add files' (copy into auto_docs_dir)
+        copied: List[Path] = []
+        failures: List[str] = []
+
+        for p in paths:
+            try:
+                copied.append(self._copy_to_auto_docs(Path(p)))
+            except Exception as exc:
+                failures.append(f"{p}: {exc}")
+
+        if failures:
+            QMessageBox.warning(self, "Some files could not be added", "\n".join(failures[:30]))
+
+        if not copied:
+            return
+
+        self.ui.append_user_message(f"[added {len(copied)} file(s)]")
+        self.ui.update_status("Indexing added files…")
+        self._ensure_index()
+
+    def _handle_pending_file_choice(self, q: str) -> bool:
+        """Resolve a user choice when we previously offered multiple file matches."""
+        if not self._pending_file_choices:
+            return False
+
+        raw = (q or "").strip().lower()
+        if raw in {"cancel", "stop", "never mind", "no"}:
+            self._pending_file_choices.clear()
+            self.ui.update_status("Cancelled.")
+            self.ui.append_assistant_message("Okay — cancelled.")
+            return True
+
+        if raw in {"all", "a"}:
+            picked = list(self._pending_file_choices)
+            self._pending_file_choices.clear()
+            self._index_specific_files(picked)
+            return True
+
+        # number selection (1-based)
+        if raw.isdigit():
+            i = int(raw)
+            if 1 <= i <= len(self._pending_file_choices):
+                picked = [self._pending_file_choices[i - 1]]
+                self._pending_file_choices.clear()
+                self._index_specific_files(picked)
+                return True
+
+        # not understood; re-show prompt
+        rows = [[str(i + 1), str(p)] for i, p in enumerate(self._pending_file_choices[:50])]
+        self.ui._show_grid_in_sheet(["#", "File"], rows)
+        self.ui.append_assistant_message(
+            "Please type a number (e.g., 1), or type **all** to index them all, or **cancel**."
+        )
+        return True
+
+    def _index_specific_files(self, files: List[Path]) -> None:
+        """Index a specific file list without changing configured source folders."""
+        if not files:
+            return
+
+        # Copy into auto_docs_dir to keep everything local/portable
+        copied: List[Path] = []
+        failures: List[str] = []
+        for p in files:
+            try:
+                copied.append(self._copy_to_auto_docs(p))
+            except Exception as exc:
+                failures.append(f"{p}: {exc}")
+
+        if failures:
+            QMessageBox.warning(self, "Some files could not be added", "\n".join(failures[:30]))
+
+        if not copied:
+            return
+
+        self.ui.update_status("Indexing selected file(s)…")
+        self._ensure_index()
+
+    def _handle_path_message(self, q: str) -> bool:
+        """Detects file/folder paths (or control commands) in the user message."""
+        raw = (q or "").strip()
+        if not raw:
+            return False
+
+        # --- Control commands ---
+        if raw.startswith("/"):
+            return self._handle_control_command(raw)
+
+        # If user pasted a path inside text, try to treat the whole message as a path token.
+        token = raw
+        # common wrappers like quotes
+        if (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
+            token = token[1:-1].strip()
+
+        # Expand env vars and ~
+        token = os.path.expandvars(os.path.expanduser(token))
+
+        # Windows copy/paste sometimes includes trailing punctuation
+        token = token.strip().strip("<>[](){}.,;")
+
+        # Wildcards -> glob expand (best-effort)
+        if any(ch in token for ch in ["*", "?", "["]):
+            matches = []
+            try:
+                matches = [Path(p) for p in sorted(fnmatch.filter(_walk_all_paths(self.config.base_dir), token))]
+            except Exception:
+                matches = []
+            if not matches:
+                try:
+                    matches = [Path(p) for p in sorted(Path().glob(token))]
+                except Exception:
+                    matches = []
+            return self._handle_path_matches(matches, token)
+
+        p = Path(token)
+        if p.exists():
+            if p.is_dir():
+                return self._add_source_folder_and_reindex(p)
+            if p.is_file():
+                return self._handle_path_matches([p], token)
+
+        return False
+
+    def _handle_path_matches(self, matches: List[Path], token: str) -> bool:
+        matches = [m for m in matches if m.exists()]
+        if not matches:
+            return False
+
+        # If multiple: offer a small picker
+        if len(matches) > 1:
+            self._pending_file_choices = matches[:50]
+            rows = [[str(i + 1), str(p)] for i, p in enumerate(self._pending_file_choices)]
+            self.ui._show_grid_in_sheet(["#", f"Matches for {token}"], rows)
+            self.ui.append_assistant_message(
+                "I found multiple matching files. Reply with a number (e.g., 1), **all**, or **cancel**."
+            )
+            self.ui.update_status("Waiting for selection…")
+            return True
+
+        # Single file
+        self._index_specific_files([matches[0]])
+        return True
+
+    def _add_source_folder_and_reindex(self, folder: Path) -> bool:
+        """Persist a folder into [index].extra_sources and re-index."""
+        folder = folder.resolve()
+        app_cfg = self._load_app_config_parser()
+
+        if not app_cfg.has_section("index"):
+            app_cfg.add_section("index")
+
+        current = app_cfg.get("index", "extra_sources", fallback="").strip()
+        parts = [p.strip() for p in current.split(";") if p.strip()]
+        if str(folder) not in parts:
+            parts.append(str(folder))
+            app_cfg.set("index", "extra_sources", "; ".join(parts))
+            atomic_write_ini(self.config_path, app_cfg)
+            self.config = load_app_config(self.config_path)
+            apply_runtime_env(self.config)
+
+        self.ui.append_user_message(f"[added folder source] {folder}")
+        self.ui.update_status("Indexing folder…")
+        self._ensure_index()
+        return True
+
+    def _handle_control_command(self, raw: str) -> bool:
+        """A small command set to make the assistant more agent-like."""
+        parts = raw.strip().split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd in {"/help", "/?"}:
+            self.ui.append_assistant_message(
+                "Commands:\n"
+                "• /help — show this\n"
+                "• /sources — show current configured sources\n"
+                "• /add <path> — add a folder as a source (persists to app_config.ini)\n"
+                "• /reindex — rebuild index\n"
+                "• /clear — clear chat\n"
+                "You can also paste a file path to add+index it."
+            )
+            self.ui.update_status("Ready")
+            return True
+
+        if cmd == "/clear":
+            self.ui.clear_chat()
+            self.ui.update_status("Ready")
+            return True
+
+        if cmd == "/sources":
+            sources = (self.config.index_sources or []) + (self.config.extra_sources or [])
+            if not sources:
+                sources = [str(self.config.auto_docs_dir)]
+            txt = "\n".join(f"• {s}" for s in sources)
+            self.ui.append_assistant_message("Current sources:\n" + txt)
+            self.ui.update_status("Ready")
+            return True
+
+        if cmd == "/reindex":
+            self.ui.update_status("Re-indexing…")
+            try:
+                if self.config.index_dir.exists():
+                    shutil.rmtree(self.config.index_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._ensure_index()
+            return True
+
+        if cmd == "/add":
+            if not arg:
+                self.ui.append_assistant_message("Usage: /add <folder-path>")
+                return True
+            cleaned = arg.strip().strip('"').strip("'")
+            p = Path(os.path.expandvars(os.path.expanduser(cleaned))).resolve()
+            if not p.exists() or not p.is_dir():
+                self.ui.append_assistant_message(f"That folder doesn't exist: {p}")
+                return True
+            return self._add_source_folder_and_reindex(p)
+
+        return False
 
     def on_send(self):
         q = self.ui.get_user_text()

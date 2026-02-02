@@ -526,3 +526,32 @@
 2026-02-02 10:51:52,452 [INFO] RAGEngine initialized
 2026-02-02 10:52:31,936 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
 2026-02-02 10:52:32,783 [INFO] Use pytorch device_name: cuda
+2026-02-02 11:19:55,926 [INFO] RAGEngine initialized
+2026-02-02 11:20:18,975 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 11:20:21,528 [INFO] Use pytorch device_name: cuda
+2026-02-02 13:02:50,142 [INFO] RAGEngine initialized
+2026-02-02 13:03:07,568 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 13:03:08,449 [INFO] Use pytorch device_name: cuda
+2026-02-02 13:13:43,317 [INFO] RAGEngine initialized
+2026-02-02 13:13:49,694 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 13:13:50,489 [INFO] Use pytorch device_name: cuda
+2026-02-02 13:25:43,018 [INFO] RAGEngine initialized
+2026-02-02 13:27:04,096 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 13:27:04,929 [INFO] Use pytorch device_name: cuda
+2026-02-02 13:47:13,874 [INFO] RAGEngine initialized
+2026-02-02 13:49:40,374 [INFO] RAGEngine initialized
+2026-02-02 13:50:00,800 [INFO] RAGEngine initialized
+2026-02-02 13:50:29,575 [INFO] RAGEngine initialized
+2026-02-02 14:00:44,522 [INFO] RAGEngine initialized
+2026-02-02 14:05:33,851 [INFO] RAGEngine initialized
+2026-02-02 14:06:21,308 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 14:06:23,806 [INFO] Use pytorch device_name: cuda
+2026-02-02 14:09:12,862 [INFO] RAGEngine initialized
+2026-02-02 14:09:30,298 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 14:09:31,063 [INFO] Use pytorch device_name: cuda
+2026-02-02 14:11:14,108 [INFO] RAGEngine initialized
+2026-02-02 14:11:24,207 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 14:11:25,135 [INFO] Use pytorch device_name: cuda
+2026-02-02 14:23:34,909 [INFO] RAGEngine initialized
+2026-02-02 14:25:23,300 [INFO] RAGEngine initialized
+2026-02-02 14:26:31,136 [INFO] RAGEngine initialized
