@@ -814,79 +814,97 @@ class AppController(QWidget):
 
             def do_answer():
                 progress = lambda s: self._thread.progress.emit(s) if self._thread else None
+                on_token = lambda t: self._thread.partial.emit(t) if self._thread else None
                 top_k_val = self.config.retrieval_top_k
 
-                initial = self.rag.generate_answer(
+                if self.config.agent_enable_control:
+                    initial = self.rag.generate_answer(
+                        q,
+                        progress=progress,
+                        top_k=top_k_val,
+                        allow_control=True,
+                    )
+
+                    clean_text, actions = parse_control_blocks(initial.get("answer", ""))
+                    if not actions:
+                        streamed = self.rag.answer_question_stream(
+                            q,
+                            progress=progress,
+                            top_k=top_k_val,
+                            on_token=on_token,
+                        )
+                        return {
+                            "answer": streamed.get("answer", ""),
+                            "sources": streamed.get("sources", []),
+                            "actions": [],
+                            "config": None,
+                        }
+
+                    summaries, config_changed, index_changed, listed_sources = self._apply_control_actions(
+                        actions,
+                        q,
+                        progress=progress,
+                    )
+
+                    updated_config = self.config
+                    if config_changed:
+                        updated_config = load_app_config(self.config_path)
+                        self._apply_config_to_runtime(updated_config)
+
+                    rebuild_requested = any(
+                        action.get("type") in {"REBUILD_INDEX", "RESCAN_DISK"}
+                        for action in actions
+                    )
+                    source_changed = any(
+                        action.get("type") in {"ADD_SOURCE", "REMOVE_SOURCE"}
+                        for action in actions
+                    )
+                    clear_requested = any(action.get("type") == "CLEAR_INDEX" for action in actions)
+
+                    if index_changed and not clear_requested and (
+                        rebuild_requested or (source_changed and updated_config.agent_auto_rebuild_index)
+                    ):
+                        files = collect_auto_docs(updated_config)
+                        if files:
+                            self.rag.build_index(
+                                files,
+                                progress=progress,
+                                chunk_size=updated_config.chunk_size,
+                                overlap=updated_config.chunk_overlap,
+                                enable_ocr=updated_config.enable_ocr,
+                                ocr_lang=updated_config.ocr_lang,
+                                enable_libreoffice=updated_config.enable_libreoffice,
+                            )
+
+                    final = self.rag.answer_question_stream(
+                        q,
+                        progress=progress,
+                        top_k=updated_config.retrieval_top_k,
+                        on_token=on_token,
+                    )
+                    final_answer = final.get("answer", "")
+
+                    if listed_sources:
+                        summaries.append("Sources: " + "; ".join(listed_sources))
+
+                    return {
+                        "answer": final_answer,
+                        "sources": final.get("sources", []),
+                        "actions": summaries,
+                        "config": updated_config,
+                    }
+
+                streamed = self.rag.answer_question_stream(
                     q,
                     progress=progress,
                     top_k=top_k_val,
-                    allow_control=self.config.agent_enable_control,
+                    on_token=on_token,
                 )
-
-                clean_text, actions = parse_control_blocks(initial.get("answer", ""))
-                if not actions:
-                    final_answer = clean_text or initial.get("answer", "")
-                    self.rag.record_interaction(q, final_answer)
-                    return {
-                        "answer": final_answer,
-                        "sources": initial.get("sources", []),
-                        "actions": [],
-                        "config": None,
-                    }
-
-                summaries, config_changed, index_changed, listed_sources = self._apply_control_actions(
-                    actions,
-                    q,
-                    progress=progress,
-                )
-
-                updated_config = self.config
-                if config_changed:
-                    updated_config = load_app_config(self.config_path)
-                    self._apply_config_to_runtime(updated_config)
-
-                rebuild_requested = any(
-                    action.get("type") in {"REBUILD_INDEX", "RESCAN_DISK"}
-                    for action in actions
-                )
-                source_changed = any(
-                    action.get("type") in {"ADD_SOURCE", "REMOVE_SOURCE"}
-                    for action in actions
-                )
-                clear_requested = any(action.get("type") == "CLEAR_INDEX" for action in actions)
-
-                if index_changed and not clear_requested and (
-                    rebuild_requested or (source_changed and updated_config.agent_auto_rebuild_index)
-                ):
-                    files = collect_auto_docs(updated_config)
-                    if files:
-                        self.rag.build_index(
-                            files,
-                            progress=progress,
-                            chunk_size=updated_config.chunk_size,
-                            overlap=updated_config.chunk_overlap,
-                            enable_ocr=updated_config.enable_ocr,
-                            ocr_lang=updated_config.ocr_lang,
-                            enable_libreoffice=updated_config.enable_libreoffice,
-                        )
-
-                final = self.rag.generate_answer(
-                    q,
-                    progress=progress,
-                    top_k=updated_config.retrieval_top_k,
-                    allow_control=False,
-                )
-                final_answer = final.get("answer", "")
-                self.rag.record_interaction(q, final_answer)
-
-                if listed_sources:
-                    summaries.append("Sources: " + "; ".join(listed_sources))
-
                 return {
-                    "answer": final_answer,
-                    "sources": final.get("sources", []),
-                    "actions": summaries,
-                    "config": updated_config,
+                    "answer": streamed.get("answer", ""),
+                    "sources": streamed.get("sources", []),
+                    "actions": [],
+                    "config": None,
                 }
 
             def on_ok(res):
@@ -909,6 +927,7 @@ class AppController(QWidget):
                 fn=do_answer,
                 on_ok=on_ok,
                 on_err=on_err,
+                on_partial=self.ui.update_assistant_stream,
             )
 
         self._ensure_index(after_ok=_after_index)
