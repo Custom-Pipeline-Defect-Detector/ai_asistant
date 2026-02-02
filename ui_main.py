@@ -482,9 +482,7 @@ class MainWindow(QWidget):
         self.input_box.setFrameStyle(QFrame.NoFrame)
         self.input_box.setFocusPolicy(Qt.StrongFocus)
         self.input_box.setInputMethodHints(Qt.ImhNone)
-        self.input_box.setMinimumHeight(56)
-        self.input_box.setMaximumHeight(160)
-        self.input_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        self.input_box.setFixedHeight(64)
         self.input_box.setPlaceholderText("Message Copilot")
         self.input_box.setAttribute(Qt.WA_StyledBackground, True)
         self.input_box.setAcceptRichText(False)
@@ -728,8 +726,7 @@ class MainWindow(QWidget):
         f.setPointSizeF(self._base_font_pt * scale)
         self.setFont(f)
 
-        self.input_box.setMinimumHeight(int(56 * scale))
-        self.input_box.setMaximumHeight(int(160 * scale))
+        self.input_box.setFixedHeight(int(64 * scale))
         self.send_button.setFixedSize(int(54 * scale), int(44 * scale))
         self.add_file_button.setFixedSize(int(44 * scale), int(44 * scale))
 
