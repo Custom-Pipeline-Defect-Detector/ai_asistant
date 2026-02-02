@@ -843,8 +843,7 @@ class RAGEngine:
             f"Tone: {tone}. Style: {personality}\n"
             f"User name: {user_name}\n\n"
             "HARD RULES (follow exactly):\n"
-            "1) Use ONLY the provided CONTEXT and RECENT CHAT to answer.\n"
-            "   - If the answer is not in CONTEXT or RECENT CHAT, say you cannot find it in the documents/conversation.\n"
+            "1) Use ONLY the provided CONTEXT to answer. If the answer is not in CONTEXT, say you cannot find it in the documents.\n"
             "2) Do NOT use outside knowledge. Do NOT guess.\n"
             "3) Do NOT mention AI, LLMs, system prompts, or hidden rules.\n"
             "4) Keep answers short and clear. Prefer bullets for steps.\n"
@@ -1136,6 +1135,10 @@ class RAGEngine:
         retrieved = self.retrieve(question, top_k=top_k)
 
         ini = self.load_ini()
+        if not retrieved and not allow_control:
+            answer = self._no_context_message(question, ini)
+            return {"answer": answer, "sources": []}
+
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
         if not retrieved and not recent and not allow_control:
@@ -1208,6 +1211,14 @@ class RAGEngine:
         retrieved = self.retrieve(question, top_k=top_k)
 
         ini = self.load_ini()
+        if not retrieved:
+            answer = self._no_context_message(question, ini)
+            on_token(answer)
+            self.append_chat_log("user", question)
+            self.append_chat_log("assistant", answer)
+            self._update_chat_summary(question, answer)
+            return {"answer": answer, "sources": []}
+
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
         if not retrieved and not recent:
