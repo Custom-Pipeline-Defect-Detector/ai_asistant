@@ -355,12 +355,17 @@ class RAGEngine:
         return self.index_path.exists() and self.chunks_path.exists() and self.docs_path.exists() and self.manifest_path.exists()
 
     def get_indexed_docs(self) -> List[str]:
-        if not self.docs_path.exists():
-            return []
-        try:
-            return json.loads(self.docs_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        candidates = [self.docs_path, Path.cwd() / "data" / "index" / "docs.json"]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(data, list):
+                return [str(item) for item in data]
+        return []
 
     def clear_index(self) -> None:
         for p in [self.index_path, self.chunks_path, self.docs_path, self.manifest_path]:
@@ -776,6 +781,15 @@ class RAGEngine:
             "how many files",
             "how many documents",
             "how many docs",
+            "what files are indexed",
+            "which files are indexed",
+            "list indexed files",
+            "list indexed documents",
+            "show indexed files",
+            "show indexed documents",
+            "indexed files",
+            "indexed documents",
+            "indexed docs",
         ]
         return any(phrase in ql for phrase in patterns)
 

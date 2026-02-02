@@ -14,7 +14,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 # --- ADD THIS near the top of app.py (imports) ---
 
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF, QTimer
 from PyQt5.QtGui import (
     QPainter,
     QColor,
@@ -760,60 +760,75 @@ class AppController(QWidget):
         QMessageBox.information(self, "Indexing report", msg)
 
     def _ensure_index(self, after_ok=None):
-        files = collect_auto_docs(self.config)
-        if not files:
-            self.ui.update_status(f"No documents found in sources: {', '.join(self.config.index_sources)}")
-            QMessageBox.warning(
-                self,
-                "No documents found",
-                "No documents found in configured sources.\n\n"
-                "Add sources in app_config.ini or use control commands to add paths.",
-            )
-            return
+        def gather_state():
+            files = collect_auto_docs(self.config)
+            index_exists = self.rag.index_exists()
+            indexed = self.rag.get_indexed_docs() if index_exists else []
+            return {"files": files, "index_exists": index_exists, "indexed": indexed}
 
-        if self.rag.index_exists():
-            indexed = set(self.rag.get_indexed_docs())
-            current = set(files)
-            if indexed == current:
-                self.ui.update_status(f"Index ready. Docs: {len(files)}")
-                if after_ok:
-                    after_ok({"docs": len(files), "chunks": -1})
+        def on_gather(res):
+            files = res.get("files", [])
+            if not files:
+                self.ui.update_status(
+                    f"No documents found in sources: {', '.join(self.config.index_sources)}"
+                )
+                QMessageBox.warning(
+                    self,
+                    "No documents found",
+                    "No documents found in configured sources.\n\n"
+                    "Add sources in app_config.ini or use control commands to add paths.",
+                )
                 return
 
-        def do_build():
-            return self.rag.build_index(
-                files,
-                progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
-                chunk_size=self.config.chunk_size,
-                overlap=self.config.chunk_overlap,
-                enable_ocr=self.config.enable_ocr,
-                ocr_lang=self.config.ocr_lang,
-                enable_libreoffice=self.config.enable_libreoffice,
+            if res.get("index_exists"):
+                indexed = set(res.get("indexed", []))
+                current = set(files)
+                if indexed == current:
+                    self.ui.update_status(f"Index ready. Docs: {len(files)}")
+                    if after_ok:
+                        after_ok({"docs": len(files), "chunks": -1})
+                    return
+
+            def do_build():
+                return self.rag.build_index(
+                    files,
+                    progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
+                    chunk_size=self.config.chunk_size,
+                    overlap=self.config.chunk_overlap,
+                    enable_ocr=self.config.enable_ocr,
+                    ocr_lang=self.config.ocr_lang,
+                    enable_libreoffice=self.config.enable_libreoffice,
+                )
+
+            def on_ok(res):
+                docs = res.get("docs", len(files))
+                chunks = res.get("chunks", 0)
+
+                indexed_docs = res.get("indexed_docs", docs)
+                attempted_docs = res.get("attempted_docs", indexed_docs)
+                failed_docs = res.get("failed_docs", max(0, attempted_docs - indexed_docs))
+
+                self.ui.update_status(
+                    f"Index ready. Selected: {docs}, Indexed: {indexed_docs}/{attempted_docs}, "
+                    f"Failed: {failed_docs}, Chunks: {chunks}"
+                )
+
+                # NEW: show per-file report for partial failures
+                if failed_docs > 0:
+                    self._show_index_report_if_needed(res)
+
+                if after_ok:
+                    after_ok(res)
+
+            self._start_worker(
+                fn=do_build,
+                on_ok=on_ok,
+                on_err=lambda e: QMessageBox.critical(self, "Index Error", e),
             )
-
-        def on_ok(res):
-            docs = res.get("docs", len(files))
-            chunks = res.get("chunks", 0)
-
-            indexed_docs = res.get("indexed_docs", docs)
-            attempted_docs = res.get("attempted_docs", indexed_docs)
-            failed_docs = res.get("failed_docs", max(0, attempted_docs - indexed_docs))
-
-            self.ui.update_status(
-                f"Index ready. Selected: {docs}, Indexed: {indexed_docs}/{attempted_docs}, "
-                f"Failed: {failed_docs}, Chunks: {chunks}"
-            )
-
-            # NEW: show per-file report for partial failures
-            if failed_docs > 0:
-                self._show_index_report_if_needed(res)
-
-            if after_ok:
-                after_ok(res)
 
         self._start_worker(
-            fn=do_build,
-            on_ok=on_ok,
+            fn=gather_state,
+            on_ok=on_gather,
             on_err=lambda e: QMessageBox.critical(self, "Index Error", e),
         )
 
@@ -1328,6 +1343,7 @@ class AppController(QWidget):
         tools = [
             {"type": "list_dir", "args": {"path": "string"}, "when": "User wants to know what files/folders are inside a directory."},
             {"type": "find_files", "args": {"query": "string"}, "when": "User wants you to locate a file on the computer by name/keywords/pattern."},
+            {"type": "list_indexed", "args": {}, "when": "User asks what files are indexed or wants the list of indexed documents."},
             {"type": "add_source", "args": {"path": "string"}, "when": "User asks to add a folder so it will be indexed going forward."},
             {"type": "reindex", "args": {}, "when": "User asks to rebuild/reindex."},
             {"type": "clear_chat", "args": {}, "when": "User asks to clear chat."},
@@ -1342,6 +1358,7 @@ RULES:
 - Choose the single best action.
 - If the user asks about folder contents OR gives a folder path, choose list_dir.
 - If the user asks you to locate a file anywhere on the computer, choose find_files.
+- If the user asks what files are indexed, choose list_indexed.
 - If the user asks to add a folder to be indexed, choose add_source.
 - If none apply, choose answer.
 
@@ -1355,7 +1372,7 @@ TOOLS:
 
 Return schema:
 {{
-  "action": "<one of: list_dir|find_files|add_source|reindex|clear_chat|answer>",
+  "action": "<one of: list_dir|find_files|list_indexed|add_source|reindex|clear_chat|answer>",
   "args": {{ ... }},
   "user_visible": "optional short status line to show while executing"
 }}
@@ -1412,8 +1429,44 @@ User message:
             self.ui.update_status("Searching files…")
             return self._handle_find_request(q)
 
+        if action == "list_indexed":
+            self.ui.update_status("Loading indexed files…")
+            return self._handle_list_indexed_docs()
+
         # action == "answer" (or unknown): let normal pipeline handle it
         return False
+
+    def _handle_list_indexed_docs(self) -> bool:
+        docs = self._load_indexed_docs_from_disk()
+        if not docs:
+            docs = self.rag.get_indexed_docs()
+
+        if not docs:
+            self.ui.append_assistant_message("No indexed documents found yet. Try rebuilding the index.")
+            self.ui.update_status("Ready")
+            return True
+
+        lines = [f"{i}. {Path(d).name} ({d})" for i, d in enumerate(docs, 1)]
+        header = f"Indexed files ({len(docs)}):"
+        self.ui.append_assistant_message(header + "\n" + "\n".join(lines))
+        self.ui.update_status("Ready")
+        return True
+
+    def _load_indexed_docs_from_disk(self) -> List[str]:
+        candidates = [
+            self.config.index_dir / "docs.json",
+            Path("data") / "index" / "docs.json",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(data, list):
+                return [str(item) for item in data]
+        return []
 
     def _start_reindex_async(self):
         """Kick off a background reindex using the existing WorkerThread."""
@@ -1484,6 +1537,9 @@ User message:
         self.ui.update_sources_text("")
         self.ui.update_status("Preparing…")
 
+        QTimer.singleShot(0, lambda: self._process_send(q))
+
+    def _process_send(self, q: str) -> None:
         if self._pending_file_choices:
             if self._handle_pending_file_choice(q):
                 return
