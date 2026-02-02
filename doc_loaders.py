@@ -27,8 +27,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 # 🔒 HARD-CODED PATHS (WINDOWS OFFLINE OCR)
 # ============================================================
 
-POPPLER_BIN = r"D:\offline_doc_assistant\poppler\Library\bin"
-TESSERACT_EXE = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+POPPLER_BIN = os.environ.get("POPPLER_PATH", r"D:\offline_doc_assistant\poppler\Library\bin")
+TESSERACT_EXE = os.environ.get("TESSERACT_EXE", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 # ----------------------------
 # Text cleanup helpers

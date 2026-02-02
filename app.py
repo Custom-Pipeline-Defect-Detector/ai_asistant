@@ -24,16 +24,23 @@ from PyQt5.QtWidgets import (
     QToolButton,
 )
 
+from app_config import apply_runtime_env, load_app_config
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("app_config.ini")
+CONFIG_PATH = Path(os.environ.get("DOC_ASSISTANT_CONFIG", str(DEFAULT_CONFIG_PATH)))
+APP_CONFIG = load_app_config(CONFIG_PATH)
+apply_runtime_env(APP_CONFIG)
+
 from rag_engine import RAGEngine
 from ui_main import MainWindow
 from worker import WorkerThread
 
-AUTO_DOCS_DIR = Path(r"D:\offline_doc_assistant\index")
-BASE_DIR = Path(r"D:\offline_doc_assistant")
-EMBED_DIR = BASE_DIR / "models" / "embed"
-DATA_DIR = BASE_DIR / "data"
-INDEX_DIR = DATA_DIR / "index"
-LOG_DIR = DATA_DIR / "logs"
+AUTO_DOCS_DIR = APP_CONFIG.auto_docs_dir
+BASE_DIR = APP_CONFIG.base_dir
+EMBED_DIR = APP_CONFIG.embed_model_dir
+DATA_DIR = APP_CONFIG.data_dir
+INDEX_DIR = APP_CONFIG.index_dir
+LOG_DIR = APP_CONFIG.log_dir
 
 SUPPORTED_EXTS = {
     # text-like
@@ -58,8 +65,8 @@ SUPPORTED_EXTS = {
     ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
 }
 
-APP_ICON_ICO = BASE_DIR / "app.ico"
-APP_ICON_PNG = BASE_DIR / "logo.png"
+APP_ICON_ICO = APP_CONFIG.app_icon_ico
+APP_ICON_PNG = APP_CONFIG.app_icon_png
 
 
 def set_windows_appusermodelid(app_id: str) -> None:
@@ -96,25 +103,18 @@ class AppController(QWidget):
     def __init__(self):
         super().__init__()
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-        # Force OCR ON always (and bilingual by default)
-        os.environ.setdefault("OCR_LANG", "auto")  # or "eng+chi_sim" if you prefer fixed
-
-        # Ensure OCR and LibreOffice conversion are enabled by default for full indexing
-        os.environ.setdefault("ENABLE_OCR", "1")
-        os.environ.setdefault("ENABLE_LIBREOFFICE", "1")
 
 
-        self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.Window |
-            Qt.WindowStaysOnTopHint
-        )
+        window_flags = Qt.FramelessWindowHint | Qt.Window
+        if APP_CONFIG.always_on_top:
+            window_flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(window_flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setMouseTracking(True)
 
-        self.setWindowTitle("Document AI Assistant")
-        self.setMinimumSize(800, 800)
+        self.setWindowTitle(APP_CONFIG.window_title)
+        self.setMinimumSize(APP_CONFIG.min_width, APP_CONFIG.min_height)
 
         # ---------- resize config ----------
         self._resize_margin = 6
@@ -180,8 +180,8 @@ class AppController(QWidget):
             embed_model_dir=EMBED_DIR,
             index_dir=INDEX_DIR,
             log_dir=LOG_DIR,
-            ollama_base_url="http://localhost:11434",
-            ollama_model="qwen2.5:7b-instruct",
+            ollama_base_url=APP_CONFIG.ollama_base_url,
+            ollama_model=APP_CONFIG.ollama_model,
         )
 
         self._busy = False
@@ -191,6 +191,7 @@ class AppController(QWidget):
         user_name = ini.get("user", {}).get("name", "Mir")
         lang = ini.get("user", {}).get("language", "en") or "en"
         self.ui.apply_language(lang, user_name=user_name)
+        self.ui.set_logo_height(APP_CONFIG.logo_height_px)
 
         self.ui.send_button.clicked.connect(self.on_send)
 
@@ -198,7 +199,7 @@ class AppController(QWidget):
         ocr_on = _bool_env("ENABLE_OCR", True)
         lo_on = _bool_env("ENABLE_LIBREOFFICE", True)
         self.ui.update_status(
-            "Ready. Place documents in D:\\offline_doc_assistant\\index "
+            f"Ready. Place documents in {AUTO_DOCS_DIR} "
             f"(OCR={'ON' if ocr_on else 'OFF'}, LibreOffice={'ON' if lo_on else 'OFF'})"
         )
         self._apply_layout()
@@ -582,6 +583,8 @@ class AppController(QWidget):
             f"自动文档文件夹： {AUTO_DOCS_DIR}\n"
             f"目前找到的文件：{len(docs)}\n"
             f"已索引的文档： {len(indexed)}\n"
+            f"OCR={'ON' if ocr_on else 'OFF'} (lang={ocr_lang})\n"
+            f"LibreOffice={'ON' if lo_on else 'OFF'}\n"
             f"人工智能记忆摘要:\n{summary}\n"
         )
 

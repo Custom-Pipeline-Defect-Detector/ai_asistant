@@ -365,7 +365,11 @@ class MainWindow(QWidget):
         self.logo_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.logo_label.setAttribute(Qt.WA_TranslucentBackground, True)
 
-        logo_path = Path(r"D:\offline_doc_assistant\logo.png")
+        logo_env = os.environ.get("APP_LOGO_PATH", "")
+        if not logo_env:
+            base_env = os.environ.get("APP_BASE_DIR", r"D:\offline_doc_assistant")
+            logo_env = str(Path(base_env) / "logo.png")
+        logo_path = Path(logo_env)
         if logo_path.exists():
             pm = QPixmap(str(logo_path))
             if not pm.isNull():
