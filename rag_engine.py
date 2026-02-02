@@ -1141,6 +1141,9 @@ class RAGEngine:
 
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
+        if not retrieved and not recent and not allow_control:
+            answer = self._no_context_message(question, ini)
+            return {"answer": answer, "sources": []}
 
         prompt, sources = self._build_prompt(
             question,
@@ -1218,6 +1221,13 @@ class RAGEngine:
 
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
+        if not retrieved and not recent:
+            answer = self._no_context_message(question, ini)
+            on_token(answer)
+            self.append_chat_log("user", question)
+            self.append_chat_log("assistant", answer)
+            self._update_chat_summary(question, answer)
+            return {"answer": answer, "sources": []}
 
         base_prompt, sources = self._build_prompt(
             question,
