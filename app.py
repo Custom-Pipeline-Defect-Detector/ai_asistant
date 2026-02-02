@@ -2,8 +2,11 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
+import shutil
 import sys
 import traceback
+from difflib import get_close_matches
 from configparser import ConfigParser
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +25,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import (
     QApplication,
+    QFileDialog,
     QMessageBox,
     QWidget,
     QToolButton,
@@ -203,6 +207,7 @@ class AppController(QWidget):
         self._resize_edge = None
         self._press_pos = None
         self._start_geom = None
+        self._pending_file_choices: List[Path] = []
 
         # =========================
         # Child UI (MainWindow)
@@ -290,6 +295,8 @@ class AppController(QWidget):
         self.ui.set_logo_height(self.config.logo_height_px)
 
         self.ui.send_button.clicked.connect(self.on_send)
+        self.ui.add_file_button.clicked.connect(self.on_add_files)
+        self.ui.files_dropped.connect(self.on_drop_files)
 
         self._update_status_ready()
         self._apply_layout()
@@ -809,6 +816,13 @@ class AppController(QWidget):
         self.ui.update_sources_text("")
         self.ui.update_status("Preparing…")
 
+        if self._pending_file_choices:
+            if self._handle_pending_file_choice(q):
+                return
+
+        if self._handle_path_message(q):
+            return
+
         def _after_index(_):
             self.ui.begin_assistant_stream()
 
@@ -931,6 +945,196 @@ class AppController(QWidget):
             )
 
         self._ensure_index(after_ok=_after_index)
+
+    def _copy_to_auto_docs(self, src: Path) -> Path:
+        dest_dir = self.config.auto_docs_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            if src.resolve() == (dest_dir / src.name).resolve():
+                return dest_dir / src.name
+        except Exception:
+            pass
+
+        dest = dest_dir / src.name
+        if dest.exists():
+            stem = src.stem
+            suffix = src.suffix
+            counter = 1
+            while True:
+                candidate = dest_dir / f"{stem}_{counter}{suffix}"
+                if not candidate.exists():
+                    dest = candidate
+                    break
+                counter += 1
+
+        shutil.copy2(src, dest)
+        return dest
+
+    def _ingest_files(self, file_paths: List[str]) -> bool:
+        if not file_paths:
+            return False
+
+        copied: List[Path] = []
+        failures: List[str] = []
+
+        for file_path in file_paths:
+            try:
+                copied.append(self._copy_to_auto_docs(Path(file_path)))
+            except Exception as exc:
+                failures.append(f"{file_path}: {exc}")
+
+        if failures:
+            QMessageBox.warning(
+                self,
+                "File copy warning",
+                "Some files could not be added:\n\n" + "\n".join(failures[:10]),
+            )
+
+        if copied:
+            self.ui.update_status(f"Added {len(copied)} file(s). Indexing new files…")
+            self._ensure_index()
+            return True
+
+        return False
+
+    @staticmethod
+    def _extract_paths(message: str) -> List[str]:
+        patterns = [
+            r'"([^"]+)"',
+            r"'([^']+)'",
+            r"([A-Za-z]:\\[^\s]+)",
+            r"(\/[^\s]+)",
+        ]
+        matches: List[str] = []
+        for pattern in patterns:
+            for match in re.findall(pattern, message):
+                if isinstance(match, tuple):
+                    match = match[0]
+                matches.append(match)
+        return [m.strip() for m in matches if m.strip()]
+
+    @staticmethod
+    def _extract_filename_tokens(message: str) -> List[str]:
+        tokens = re.findall(r"[\w\-. ]+\.[A-Za-z0-9]{1,8}", message)
+        cleaned = []
+        for token in tokens:
+            candidate = token.strip().strip('"').strip("'")
+            if candidate:
+                cleaned.append(candidate)
+        return cleaned
+
+    def _match_files_in_dir(self, directory: Path, requested_name: str) -> List[Path]:
+        if not directory.exists() or not directory.is_dir():
+            return []
+
+        requested_lower = requested_name.lower()
+        candidates = [p for p in directory.iterdir() if p.is_file()]
+
+        exact = [p for p in candidates if p.name.lower() == requested_lower]
+        if exact:
+            return exact
+
+        partial = [p for p in candidates if requested_lower in p.name.lower()]
+        if partial:
+            return partial
+
+        names = [p.name for p in candidates]
+        close = get_close_matches(requested_name, names, n=8, cutoff=0.4)
+        return [directory / name for name in close]
+
+    def _handle_pending_file_choice(self, message: str) -> bool:
+        selection = message.strip().lower()
+        if not selection:
+            return False
+
+        chosen: Optional[Path] = None
+        if selection.isdigit():
+            idx = int(selection) - 1
+            if 0 <= idx < len(self._pending_file_choices):
+                chosen = self._pending_file_choices[idx]
+        else:
+            for path in self._pending_file_choices:
+                if selection == path.name.lower() or selection in path.name.lower():
+                    chosen = path
+                    break
+
+        if not chosen:
+            self.ui.append_assistant_message(
+                "I couldn't match that choice. Please reply with the number or the file name."
+            )
+            return True
+
+        self._pending_file_choices = []
+        self.ui.append_assistant_message(f"Adding {chosen.name} to the index…")
+        self._ingest_files([str(chosen)])
+        return True
+
+    def _handle_path_message(self, message: str) -> bool:
+        paths = self._extract_paths(message)
+        filename_tokens = self._extract_filename_tokens(message)
+
+        requested_name = filename_tokens[0] if filename_tokens else ""
+
+        if not paths and not requested_name:
+            return False
+
+        files_to_add: List[str] = []
+
+        for raw in paths:
+            p = Path(raw)
+            if p.is_file():
+                files_to_add.append(str(p))
+                continue
+            if p.is_dir():
+                if not requested_name:
+                    self.ui.append_assistant_message(
+                        f"I found the folder `{p}`. Tell me the file name to add."
+                    )
+                    return True
+
+                matches = self._match_files_in_dir(p, requested_name)
+                if not matches:
+                    self.ui.append_assistant_message(
+                        f"I couldn't find `{requested_name}` in `{p}`. "
+                        "Please share the exact file name or full path."
+                    )
+                    return True
+
+                if len(matches) == 1:
+                    files_to_add.append(str(matches[0]))
+                    continue
+
+                self._pending_file_choices = matches
+                options = "\n".join(
+                    f"{idx}. {match.name}" for idx, match in enumerate(matches, start=1)
+                )
+                self.ui.append_assistant_message(
+                    "I found multiple matches. Which file should I add?\n" + options
+                )
+                return True
+
+        if files_to_add:
+            self.ui.append_assistant_message("Adding your file(s) to the index…")
+            self._ingest_files(files_to_add)
+            return True
+
+        return False
+
+    def on_add_files(self):
+        if self._busy:
+            return
+
+        start_dir = str(self.config.base_dir)
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Add files to index", start_dir, "All files (*.*)")
+        if not file_paths:
+            return
+        self._ingest_files(file_paths)
+
+    def on_drop_files(self, paths: List[str]):
+        if self._busy:
+            return
+        self._ingest_files(paths)
 
     def on_settings(self):
         ini = self.rag.load_ini()
