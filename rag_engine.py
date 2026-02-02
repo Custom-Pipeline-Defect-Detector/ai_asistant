@@ -1,12 +1,15 @@
 import json
 import logging
-import os
 import re
 import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Any
+
+from configparser import ConfigParser
+
+from config_io import load_ini_with_backup, atomic_write_ini
 
 import faiss
 import numpy as np
@@ -27,6 +30,79 @@ class RAGEngineError(Exception):
     pass
 
 
+def default_assistant_config() -> Dict[str, Dict[str, str]]:
+    return {
+        "user": {
+            "name": "Mir",
+            "language": "auto",
+        },
+        "assistant": {
+            "name": "Assistant",
+            "tone": "professional_friendly",
+            "personality": "Helpful, concise, accurate. Uses citations when possible. Asks follow-ups only if necessary.",
+            "custom_rules": "",
+            "system_prompt_template": "",
+        },
+        "preferences": {
+            "time_format": "24h",
+            "timezone": "local",
+            "auto_save_facts": "true",
+        },
+        "agent": {
+            "enable_control": "true",
+            "control_block_syntax": "<CONTROL>...</CONTROL>",
+            "max_steps": "3",
+            "auto_rebuild_index": "true",
+            "self_tune": "true",
+        },
+    }
+
+
+ASSISTANT_SCHEMA: Dict[str, Dict[str, str]] = {
+    "user": {
+        "name": "str",
+        "language": "str",
+    },
+    "assistant": {
+        "name": "str",
+        "tone": "str",
+        "personality": "str",
+        "custom_rules": "str",
+        "system_prompt_template": "str",
+    },
+    "preferences": {
+        "time_format": "str",
+        "timezone": "str",
+        "auto_save_facts": "bool",
+    },
+    "agent": {
+        "enable_control": "bool",
+        "control_block_syntax": "str",
+        "max_steps": "int",
+        "auto_rebuild_index": "bool",
+        "self_tune": "bool",
+    },
+}
+
+
+def normalize_assistant_value(section: str, key: str, raw: str) -> Tuple[str, str]:
+    section = section.lower()
+    key = key.lower()
+    value_type = ASSISTANT_SCHEMA.get(section, {}).get(key)
+    if value_type is None:
+        raise ValueError(f"Unsupported config key: {section}.{key}")
+    text = raw.strip()
+    if value_type == "bool":
+        if text.lower() in {"1", "true", "yes", "on"}:
+            return section, "true"
+        if text.lower() in {"0", "false", "no", "off"}:
+            return section, "false"
+        raise ValueError(f"Invalid boolean for {section}.{key}: {raw}")
+    if value_type == "int":
+        return section, str(int(text))
+    return section, text
+
+
 class RAGEngine:
     """
     RAG + Ollama LLM + Persistent Memory.
@@ -43,8 +119,28 @@ class RAGEngine:
         embed_model_dir: Path,
         index_dir: Path,
         log_dir: Path,
+        memory_dir: Path,
         ollama_base_url: str = "http://localhost:11434",
         ollama_model: str = "qwen2.5:7b-instruct",
+        ollama_timeout_s: int = 600,
+        generation_temperature: float = 0.2,
+        generation_top_p: float = 0.9,
+        generation_num_predict: int = 900,
+        retrieval_min_score: float = 0.0,
+        embed_batch_size: int = 64,
+        hnsw_m: int = 32,
+        hnsw_ef_construction: int = 200,
+        hnsw_ef_search: int = 64,
+        enable_ocr: bool = True,
+        ocr_lang: str = "auto",
+        enable_libreoffice: bool = True,
+        poppler_path: Optional[str] = None,
+        tesseract_exe: Optional[str] = None,
+        soffice_path: Optional[str] = None,
+        pdf_ocr_max_pages: Optional[int] = None,
+        scanned_pdf_min_chars: int = 60,
+        pdf_dpi: int = 250,
+        libreoffice_timeout_s: int = 90,
     ):
         self.base_dir = base_dir
         self.embed_model_dir = embed_model_dir
@@ -53,6 +149,25 @@ class RAGEngine:
 
         self.ollama_base_url = ollama_base_url.rstrip("/")
         self.ollama_model = ollama_model
+        self.ollama_timeout_s = ollama_timeout_s
+        self.generation_temperature = generation_temperature
+        self.generation_top_p = generation_top_p
+        self.generation_num_predict = generation_num_predict
+        self.retrieval_min_score = retrieval_min_score
+        self.embed_batch_size = embed_batch_size
+        self.hnsw_m = hnsw_m
+        self.hnsw_ef_construction = hnsw_ef_construction
+        self.hnsw_ef_search = hnsw_ef_search
+        self.enable_ocr = enable_ocr
+        self.ocr_lang = ocr_lang
+        self.enable_libreoffice = enable_libreoffice
+        self.poppler_path = poppler_path
+        self.tesseract_exe = tesseract_exe
+        self.soffice_path = soffice_path
+        self.pdf_ocr_max_pages = pdf_ocr_max_pages
+        self.scanned_pdf_min_chars = scanned_pdf_min_chars
+        self.pdf_dpi = pdf_dpi
+        self.libreoffice_timeout_s = libreoffice_timeout_s
 
         self.index_path = self.index_dir / "index.faiss"
         self.chunks_path = self.index_dir / "chunks.json"
@@ -67,7 +182,7 @@ class RAGEngine:
         self._chunk_map: Optional[Dict[int, ChunkMetadata]] = None
 
         # Persistent memory
-        self.memory_dir = self.base_dir / "data" / "memory"
+        self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.ini_path = self.memory_dir / "assistant.ini"
         self.chat_log_path = self.memory_dir / "chat_history.jsonl"
@@ -90,27 +205,10 @@ class RAGEngine:
     # ---------------- memory (INI + chat log) ----------------
     def _ensure_memory_files(self):
         if not self.ini_path.exists():
-            self.ini_path.write_text(
-                "\n".join(
-                    [
-                        "[user]",
-                        "name=Mir",
-                        "language=auto",
-                        "",
-                        "[assistant]",
-                        "name=Assistant",
-                        "tone=professional_friendly",
-                        "personality=Helpful, concise, accurate. Uses citations when possible. Asks follow-ups only if necessary.",
-                        "custom_rules=",
-                        "",
-                        "[preferences]",
-                        "time_format=24h",
-                        "timezone=local",
-                        "auto_save_facts=true",
-                    ]
-                ),
-                encoding="utf-8",
-            )
+            config = ConfigParser()
+            for section, values in default_assistant_config().items():
+                config[section] = values
+            atomic_write_ini(self.ini_path, config)
 
         if not self.chat_summary_path.exists():
             self.chat_summary_path.write_text(
@@ -121,30 +219,96 @@ class RAGEngine:
         if not self.chat_log_path.exists():
             self.chat_log_path.write_text("", encoding="utf-8")
 
+    def apply_runtime_config(
+        self,
+        *,
+        base_dir: Path,
+        embed_model_dir: Path,
+        index_dir: Path,
+        log_dir: Path,
+        memory_dir: Path,
+        ollama_base_url: str,
+        ollama_model: str,
+        ollama_timeout_s: int,
+        generation_temperature: float,
+        generation_top_p: float,
+        generation_num_predict: int,
+        retrieval_min_score: float,
+        embed_batch_size: int,
+        hnsw_m: int,
+        hnsw_ef_construction: int,
+        hnsw_ef_search: int,
+        enable_ocr: bool,
+        ocr_lang: str,
+        enable_libreoffice: bool,
+        poppler_path: Optional[str],
+        tesseract_exe: Optional[str],
+        soffice_path: Optional[str],
+        pdf_ocr_max_pages: Optional[int],
+        scanned_pdf_min_chars: int,
+        pdf_dpi: int,
+        libreoffice_timeout_s: int,
+    ) -> None:
+        index_changed = index_dir != self.index_dir
+        memory_changed = memory_dir != self.memory_dir
+
+        self.base_dir = base_dir
+        self.embed_model_dir = embed_model_dir
+        self.index_dir = index_dir
+        self.log_dir = log_dir
+        self.ollama_base_url = ollama_base_url.rstrip("/")
+        self.ollama_model = ollama_model
+        self.ollama_timeout_s = ollama_timeout_s
+        self.generation_temperature = generation_temperature
+        self.generation_top_p = generation_top_p
+        self.generation_num_predict = generation_num_predict
+        self.retrieval_min_score = retrieval_min_score
+        self.embed_batch_size = embed_batch_size
+        self.hnsw_m = hnsw_m
+        self.hnsw_ef_construction = hnsw_ef_construction
+        self.hnsw_ef_search = hnsw_ef_search
+        self.enable_ocr = enable_ocr
+        self.ocr_lang = ocr_lang
+        self.enable_libreoffice = enable_libreoffice
+        self.poppler_path = poppler_path
+        self.tesseract_exe = tesseract_exe
+        self.soffice_path = soffice_path
+        self.pdf_ocr_max_pages = pdf_ocr_max_pages
+        self.scanned_pdf_min_chars = scanned_pdf_min_chars
+        self.pdf_dpi = pdf_dpi
+        self.libreoffice_timeout_s = libreoffice_timeout_s
+
+        self.index_path = self.index_dir / "index.faiss"
+        self.chunks_path = self.index_dir / "chunks.json"
+        self.docs_path = self.index_dir / "docs.json"
+        self.manifest_path = self.index_dir / "manifest.json"
+
+        if memory_changed:
+            self.memory_dir = memory_dir
+            self.memory_dir.mkdir(parents=True, exist_ok=True)
+            self.ini_path = self.memory_dir / "assistant.ini"
+            self.chat_log_path = self.memory_dir / "chat_history.jsonl"
+            self.chat_summary_path = self.memory_dir / "chat_summary.txt"
+            self._ensure_memory_files()
+
+        if index_changed:
+            self._faiss = None
+            self._chunks = []
+            self._active_ids = None
+            self._chunk_map = None
+
     def load_ini(self) -> Dict[str, Dict[str, str]]:
+        config = load_ini_with_backup(self.ini_path, default_assistant_config())
         data: Dict[str, Dict[str, str]] = {}
-        current = None
-        for line in self.ini_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = line.strip()
-            if not line or line.startswith(";") or line.startswith("#"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                current = line[1:-1].strip().lower()
-                data.setdefault(current, {})
-                continue
-            if "=" in line and current:
-                k, v = line.split("=", 1)
-                data[current][k.strip().lower()] = v.strip()
+        for section in config.sections():
+            data[section] = {k: v for k, v in config.items(section)}
         return data
 
     def save_ini(self, data: Dict[str, Dict[str, str]]) -> None:
-        lines = []
+        config = ConfigParser()
         for section, kv in data.items():
-            lines.append(f"[{section}]")
-            for k, v in kv.items():
-                lines.append(f"{k}={v}")
-            lines.append("")
-        self.ini_path.write_text("\n".join(lines), encoding="utf-8")
+            config[section] = kv
+        atomic_write_ini(self.ini_path, config)
 
     def append_chat_log(self, role: str, text: str) -> None:
         record = {
@@ -307,14 +471,9 @@ class RAGEngine:
         - HNSW for speed on large chunk sets
         - IDMap2 to allow remove_ids
         """
-        # HNSW params: tuneable
-        m = int(os.environ.get("HNSW_M", "32"))
-        efc = int(os.environ.get("HNSW_EF_CONSTRUCTION", "200"))
-        efs = int(os.environ.get("HNSW_EF_SEARCH", "64"))
-
-        hnsw = faiss.IndexHNSWFlat(dim, m, faiss.METRIC_INNER_PRODUCT)
-        hnsw.hnsw.efConstruction = efc
-        hnsw.hnsw.efSearch = efs
+        hnsw = faiss.IndexHNSWFlat(dim, int(self.hnsw_m), faiss.METRIC_INNER_PRODUCT)
+        hnsw.hnsw.efConstruction = int(self.hnsw_ef_construction)
+        hnsw.hnsw.efSearch = int(self.hnsw_ef_search)
 
         return faiss.IndexIDMap2(hnsw)
 
@@ -341,34 +500,15 @@ class RAGEngine:
 
         # Defaults: make it "automatic" without user choosing
         if enable_ocr is None:
-            enable_ocr = os.environ.get("ENABLE_OCR", "1").strip().lower() in {"1", "true", "yes", "on"}
+            enable_ocr = self.enable_ocr
         if ocr_lang is None:
-            ocr_lang = os.environ.get("OCR_LANG", "auto").strip() or "auto"
+            ocr_lang = self.ocr_lang
         if enable_libreoffice is None:
-            enable_libreoffice = os.environ.get("ENABLE_LIBREOFFICE", "1").strip().lower() in {"1", "true", "yes", "on"}
+            enable_libreoffice = self.enable_libreoffice
 
-        poppler_path = os.environ.get("POPPLER_PATH", "").strip() or None
-        pdf_ocr_max_pages_env = os.environ.get("PDF_OCR_MAX_PAGES", "").strip()
-        pdf_ocr_max_pages = int(pdf_ocr_max_pages_env) if pdf_ocr_max_pages_env.isdigit() else None
-        scanned_min_chars_env = os.environ.get("SCANNED_PDF_MIN_CHARS", "").strip()
-        scanned_pdf_min_chars = int(scanned_min_chars_env) if scanned_min_chars_env.isdigit() else 60
-        # Override chunk size and overlap from environment variables if provided
-        chunk_size_env = os.environ.get("CHUNK_SIZE", "").strip().lower()
-        if chunk_size_env:
-            try:
-                # Accept special keywords for "full" meaning no chunking
-                if chunk_size_env in {"full", "whole", "all"}:
-                    chunk_size = 0
-                else:
-                    chunk_size = int(chunk_size_env)
-            except Exception:
-                pass
-        overlap_env = os.environ.get("CHUNK_OVERLAP", "").strip()
-        if overlap_env:
-            try:
-                overlap = int(overlap_env)
-            except Exception:
-                pass
+        poppler_path = self.poppler_path
+        pdf_ocr_max_pages = self.pdf_ocr_max_pages
+        scanned_pdf_min_chars = self.scanned_pdf_min_chars
 
         # Load existing index/manifest if present
         manifest = self._load_manifest()
@@ -440,9 +580,13 @@ class RAGEngine:
             enable_ocr=enable_ocr,
             ocr_lang=ocr_lang,
             enable_libreoffice=enable_libreoffice,
+            soffice_path=self.soffice_path,
+            libreoffice_timeout_s=self.libreoffice_timeout_s,
+            tesseract_exe=self.tesseract_exe,
             scanned_pdf_min_chars=scanned_pdf_min_chars,
             pdf_ocr_max_pages=pdf_ocr_max_pages,
             poppler_path=poppler_path,
+            pdf_dpi=self.pdf_dpi,
         )
 
         attempted = len(report)
@@ -475,7 +619,7 @@ class RAGEngine:
                 texts,
                 show_progress_bar=False,
                 convert_to_numpy=True,
-                batch_size=int(os.environ.get("EMBED_BATCH_SIZE", "64")),
+                batch_size=int(self.embed_batch_size),
             )
             emb = emb.astype(np.float32)
             emb = self._normalize(emb)
@@ -579,6 +723,8 @@ class RAGEngine:
         for cid, score in zip(ids[0].tolist(), scores[0].tolist()):
             if cid < 0:
                 continue
+            if score < self.retrieval_min_score:
+                continue
             if active is not None and cid not in active:
                 continue
             meta = chunk_map.get(int(cid))
@@ -641,6 +787,8 @@ class RAGEngine:
         ini: Dict[str, Dict[str, str]],
         chat_summary: str,
         recent_chat: List[Dict[str, str]],
+        *,
+        allow_control: bool = False,
     ) -> Tuple[str, List[str]]:
         ctx_lines = []
         sources = []
@@ -658,6 +806,15 @@ class RAGEngine:
             "Helpful, concise, accurate. Uses citations when possible.",
         )
         custom_rules = ini.get("assistant", {}).get("custom_rules", "").strip()
+        prompt_template = ini.get("assistant", {}).get("system_prompt_template", "").strip()
+        agent_cfg = ini.get("agent", {})
+        agent_enable_control = agent_cfg.get("enable_control", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        control_syntax = agent_cfg.get("control_block_syntax", "<CONTROL>...</CONTROL>").strip()
 
         pref_lang = ini.get("user", {}).get("language", "auto").lower()
         language_rule = (
@@ -716,16 +873,62 @@ class RAGEngine:
         if custom_rules:
             system_rules += f"\nCUSTOM RULES:\n{custom_rules}\n"
 
+        if allow_control and agent_enable_control:
+            system_rules += (
+                "\nCONTROL ACTIONS:\n"
+                "- If you need to change config or indexing, respond with ONLY a control block and no answer.\n"
+                "- Control block syntax must be exactly:\n"
+                "  <CONTROL>\n"
+                "  SET section.key=value\n"
+                "  ADD_SOURCE \"path\"\n"
+                "  REMOVE_SOURCE \"path\"\n"
+                "  REBUILD_INDEX\n"
+                "  CLEAR_INDEX\n"
+                "  RELOAD_CONFIG\n"
+                "  LIST_SOURCES\n"
+                "  RESCAN_DISK\n"
+                "  </CONTROL>\n"
+                "- If no actions are needed, answer normally and do NOT include a control block.\n"
+                f"- Declared control syntax: {control_syntax}\n"
+            )
+
         system_rules += f"\nUser language preference: {pref_lang}\n{language_rule}\n"
 
-        prompt = (
-            f"{system_rules}\n"
-            f"MEMORY SUMMARY (facts about the user / preferences):\n{chat_summary}\n\n"
-            f"RECENT CHAT:\n{recent_chat_block}\n\n"
-            f"CONTEXT (documents):\n{context}\n\n"
-            f"QUESTION: {question}\n"
-            "ANSWER:"
-        )
+        if prompt_template:
+            payload = {
+                "assistant_name": assistant_name,
+                "user_name": user_name,
+                "tone": tone,
+                "personality": personality,
+                "custom_rules": custom_rules,
+                "pref_lang": pref_lang,
+                "language_rule": language_rule,
+                "system_rules": system_rules,
+                "chat_summary": chat_summary,
+                "recent_chat": recent_chat_block,
+                "context": context,
+                "question": question,
+            }
+            try:
+                prompt = prompt_template.format(**payload)
+            except Exception:
+                prompt = (
+                    f"{system_rules}\n"
+                    f"MEMORY SUMMARY (facts about the user / preferences):\n{chat_summary}\n\n"
+                    f"RECENT CHAT:\n{recent_chat_block}\n\n"
+                    f"CONTEXT (documents):\n{context}\n\n"
+                    f"QUESTION: {question}\n"
+                    "ANSWER:"
+                )
+        else:
+            prompt = (
+                f"{system_rules}\n"
+                f"MEMORY SUMMARY (facts about the user / preferences):\n{chat_summary}\n\n"
+                f"RECENT CHAT:\n{recent_chat_block}\n\n"
+                f"CONTEXT (documents):\n{context}\n\n"
+                f"QUESTION: {question}\n"
+                "ANSWER:"
+            )
         return prompt, sources
 
     # ---------------- continuation helpers ----------------
@@ -769,19 +972,21 @@ class RAGEngine:
         )
 
     # ---------------- Ollama generate ----------------
-    def _ollama_generate(self, prompt: str, num_predict: int = 650) -> str:
+    def _ollama_generate(self, prompt: str, num_predict: Optional[int] = None) -> str:
         url = f"{self.ollama_base_url}/api/generate"
+        if num_predict is None:
+            num_predict = self.generation_num_predict
         payload = {
             "model": self.ollama_model,
             "prompt": prompt,
             "stream": False,
             "options": {
-                "temperature": 0.2,
+                "temperature": float(self.generation_temperature),
                 "num_predict": int(num_predict),
-                "top_p": 0.9,
+                "top_p": float(self.generation_top_p),
             },
         }
-        r = requests.post(url, json=payload, timeout=600)
+        r = requests.post(url, json=payload, timeout=int(self.ollama_timeout_s))
         r.raise_for_status()
         data = r.json()
         return (data.get("response") or "").strip()
@@ -790,23 +995,25 @@ class RAGEngine:
         self,
         prompt: str,
         on_token: Callable[[str], None],
-        num_predict: int = 650,
+        num_predict: Optional[int] = None,
     ) -> Tuple[str, str]:
         url = f"{self.ollama_base_url}/api/generate"
+        if num_predict is None:
+            num_predict = self.generation_num_predict
         payload = {
             "model": self.ollama_model,
             "prompt": prompt,
             "stream": True,
             "options": {
-                "temperature": 0.2,
+                "temperature": float(self.generation_temperature),
                 "num_predict": int(num_predict),
-                "top_p": 0.9,
+                "top_p": float(self.generation_top_p),
             },
         }
 
         parts: List[str] = []
         done_reason = ""
-        with requests.post(url, json=payload, stream=True, timeout=600) as r:
+        with requests.post(url, json=payload, stream=True, timeout=int(self.ollama_timeout_s)) as r:
             r.raise_for_status()
             for line in r.iter_lines(decode_unicode=True):
                 if not line:
@@ -873,37 +1080,37 @@ class RAGEngine:
 
         self.set_chat_summary("\n".join(lines))
 
+    def record_interaction(self, question: str, answer: str) -> None:
+        self.append_chat_log("user", question)
+        self.append_chat_log("assistant", answer)
+        updates = self._extract_memory_updates(question)
+        self._apply_memory_updates(updates)
+        self._update_chat_summary(question, answer)
+
     # ---------------- main answering ----------------
-    def answer_question(
+    def generate_answer(
         self,
         question: str,
         progress: Callable[[str], None] = lambda _: None,
         top_k: int = 60,
+        *,
+        allow_control: bool = False,
     ) -> Dict[str, object]:
         # Handle special queries (time / file count) before retrieval
         if self._looks_like_time_question(question):
             t = self.tool_time_string()
             ans = f"The current local time is **{t}**."
-            self.append_chat_log("user", question)
-            self.append_chat_log("assistant", ans)
-            self._update_chat_summary(question, ans)
             return {"answer": ans, "sources": []}
 
         if self._looks_like_doc_count_question(question):
-            # Return the exact number of indexed files and list them
             docs = self.get_indexed_docs()
             n = len(docs)
-            # Compose a simple answer listing all documents (up to 50 to avoid overflow)
             header = f"You have {n} document" + ("s" if n != 1 else "") + "."
             if n > 0:
-                # Format as a numbered list for clarity
                 lines = [f"{i}. {Path(d).name}" for i, d in enumerate(docs, 1)]
                 answer = header + "\n" + "\n".join(lines)
             else:
                 answer = header
-            self.append_chat_log("user", question)
-            self.append_chat_log("assistant", answer)
-            self._update_chat_summary(question, answer)
             return {"answer": answer, "sources": []}
 
         progress("Retrieving…")
@@ -913,21 +1120,31 @@ class RAGEngine:
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
 
-        prompt, sources = self._build_prompt(question, retrieved, ini, summary, recent)
+        prompt, sources = self._build_prompt(
+            question,
+            retrieved,
+            ini,
+            summary,
+            recent,
+            allow_control=allow_control,
+        )
 
         progress("Generating…")
-        answer = self._ollama_generate(prompt, num_predict=900)
+        answer = self._ollama_generate(prompt)
         if not answer:
             answer = "I don’t know from the provided documents."
 
-        self.append_chat_log("user", question)
-        self.append_chat_log("assistant", answer)
-
-        updates = self._extract_memory_updates(question)
-        self._apply_memory_updates(updates)
-        self._update_chat_summary(question, answer)
-
         return {"answer": answer, "sources": sources}
+
+    def answer_question(
+        self,
+        question: str,
+        progress: Callable[[str], None] = lambda _: None,
+        top_k: int = 60,
+    ) -> Dict[str, object]:
+        res = self.generate_answer(question, progress=progress, top_k=top_k, allow_control=False)
+        self.record_interaction(question, res.get("answer", ""))
+        return res
 
     def answer_question_stream(
         self,
@@ -972,7 +1189,14 @@ class RAGEngine:
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
 
-        base_prompt, sources = self._build_prompt(question, retrieved, ini, summary, recent)
+        base_prompt, sources = self._build_prompt(
+            question,
+            retrieved,
+            ini,
+            summary,
+            recent,
+            allow_control=False,
+        )
 
         progress("Generating…")
         full_parts: List[str] = []

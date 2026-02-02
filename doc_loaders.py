@@ -8,7 +8,7 @@ Upgrades:
   - PDF: try text extract first; OCR only if likely scanned (low text + image-heavy)
   - Images: OCR always (if enabled)
 - Per-file diagnostics (method, extracted chars, warnings/errors)
-- Offline-friendly (hardcoded Poppler + Tesseract paths)
+- Offline-friendly (configurable Poppler + Tesseract paths)
 """
 from __future__ import annotations
 
@@ -22,13 +22,6 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
-
-# ============================================================
-# 🔒 HARD-CODED PATHS (WINDOWS OFFLINE OCR)
-# ============================================================
-
-POPPLER_BIN = os.environ.get("POPPLER_PATH", r"D:\offline_doc_assistant\poppler\Library\bin")
-TESSERACT_EXE = os.environ.get("TESSERACT_EXE", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 # ----------------------------
 # Text cleanup helpers
@@ -77,10 +70,10 @@ class LoadReportEntry:
 _TESS_LANG_CACHE: Optional[str] = None
 
 
-def _normalize_ocr_lang(lang: str) -> str:
+def _normalize_ocr_lang(lang: str, tesseract_exe: Optional[str]) -> str:
     t = (lang or "").strip().lower()
     if not t or t in {"auto", "zh", "chinese", "cn"}:
-        return _auto_tesseract_lang()
+        return _auto_tesseract_lang(tesseract_exe)
 
     if t in {"zh-cn", "zh-hans", "hans", "chs"}:
         return "eng+chi_sim"
@@ -90,7 +83,7 @@ def _normalize_ocr_lang(lang: str) -> str:
     return (lang or "eng").strip()
 
 
-def _auto_tesseract_lang() -> str:
+def _auto_tesseract_lang(tesseract_exe: Optional[str]) -> str:
     global _TESS_LANG_CACHE
     if _TESS_LANG_CACHE:
         return _TESS_LANG_CACHE
@@ -98,7 +91,8 @@ def _auto_tesseract_lang() -> str:
     best = "eng+chi_sim"
     try:
         import pytesseract  # type: ignore
-        pytesseract.pytesseract.tesseract_cmd = TESSERACT_EXE
+        if tesseract_exe:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_exe
 
         langs = set()
         try:
@@ -129,10 +123,9 @@ def _auto_tesseract_lang() -> str:
     return best
 
 
-def _default_soffice() -> Optional[str]:
-    env = os.environ.get("SOFFICE_PATH", "").strip().strip('"')
-    if env:
-        p = Path(env)
+def _default_soffice(override: Optional[str]) -> Optional[str]:
+    if override:
+        p = Path(override)
         if p.exists() and p.is_file():
             return str(p)
 
@@ -299,12 +292,13 @@ def _load_json(path: Path) -> str:
 # OCR (optional)
 # ----------------------------
 
-def _ocr_image_file(path: Path, lang: str = "auto") -> str:
+def _ocr_image_file(path: Path, lang: str = "auto", tesseract_exe: Optional[str] = None) -> str:
     from PIL import Image  # type: ignore
     import pytesseract  # type: ignore
 
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_EXE
-    lang = _normalize_ocr_lang(lang)
+    if tesseract_exe:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_exe
+    lang = _normalize_ocr_lang(lang, tesseract_exe)
 
     img = Image.open(str(path))
     return clean_text(pytesseract.image_to_string(img, lang=lang))
@@ -315,18 +309,19 @@ def _ocr_pdf(
     lang: str = "auto",
     max_pages: Optional[int] = None,
     poppler_path: Optional[str] = None,
+    tesseract_exe: Optional[str] = None,
+    pdf_dpi: int = 250,
 ) -> str:
     from pdf2image import convert_from_path  # type: ignore
     import pytesseract  # type: ignore
 
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_EXE
-    if poppler_path is None:
-        poppler_path = POPPLER_BIN
+    if tesseract_exe:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_exe
 
-    lang = _normalize_ocr_lang(lang)
+    lang = _normalize_ocr_lang(lang, tesseract_exe)
 
     kwargs = dict(
-        dpi=250,
+        dpi=pdf_dpi,
         first_page=1,
         poppler_path=poppler_path,
     )
@@ -425,17 +420,20 @@ def load_documents(
     ocr_lang: str = "auto",
     enable_libreoffice: bool = True,
     soffice_path: Optional[str] = None,
+    libreoffice_timeout_s: int = 90,
+    tesseract_exe: Optional[str] = None,
     # PDF auto-OCR heuristics
     scanned_pdf_min_chars: int = 60,
     pdf_ocr_max_pages: Optional[int] = None,
     poppler_path: Optional[str] = None,
+    pdf_dpi: int = 250,
 ) -> Tuple[List[Dict[str, str]], List[LoadReportEntry]]:
 
     docs: List[Dict[str, str]] = []
     report: List[LoadReportEntry] = []
 
-    soffice = soffice_path or _default_soffice()
-    ocr_lang = _normalize_ocr_lang(ocr_lang)
+    soffice = _default_soffice(soffice_path)
+    ocr_lang = _normalize_ocr_lang(ocr_lang, tesseract_exe)
 
     for p in paths:
         p = Path(p)
@@ -468,6 +466,8 @@ def load_documents(
                             lang=ocr_lang,
                             max_pages=pdf_ocr_max_pages,
                             poppler_path=poppler_path,
+                            tesseract_exe=tesseract_exe,
+                            pdf_dpi=pdf_dpi,
                         )
                         text = clean_text(text)
                         ok = bool(text.strip())
@@ -475,7 +475,7 @@ def load_documents(
 
             elif ext in IMAGE_EXTS and enable_ocr:
                 method = "ocr:image"
-                text = _ocr_image_file(p, lang=ocr_lang)
+                text = _ocr_image_file(p, lang=ocr_lang, tesseract_exe=tesseract_exe)
                 text = clean_text(text)
                 ok = bool(text.strip())
 
@@ -483,7 +483,13 @@ def load_documents(
                 # Convert supported office formats via LibreOffice
                 method = "convert:libreoffice->txt"
                 with tempfile.TemporaryDirectory() as td:
-                    converted = _convert_with_libreoffice(soffice, p, Path(td), target="txt:Text")
+                    converted = _convert_with_libreoffice(
+                        soffice,
+                        p,
+                        Path(td),
+                        target="txt:Text",
+                        timeout_s=libreoffice_timeout_s,
+                    )
                     text = load_txt_like(converted)
                 text = clean_text(text)
                 ok = bool(text.strip())
@@ -494,7 +500,13 @@ def load_documents(
                     try:
                         method = "convert:libreoffice->txt"
                         with tempfile.TemporaryDirectory() as td:
-                            converted = _convert_with_libreoffice(soffice, p, Path(td), target="txt:Text")
+                            converted = _convert_with_libreoffice(
+                                soffice,
+                                p,
+                                Path(td),
+                                target="txt:Text",
+                                timeout_s=libreoffice_timeout_s,
+                            )
                             text = load_txt_like(converted)
                         text = clean_text(text)
                         ok = bool(text.strip())
