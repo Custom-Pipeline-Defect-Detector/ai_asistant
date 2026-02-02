@@ -36,7 +36,7 @@ UI_STRINGS = {
         "title": "Document AI Assistant",
         "settings": "Settings",
         "greeting": "Nice to see you, {name}. What’s new?",
-        "input_placeholder": "Ask me anything related to your documents, \nIf new documents were added, please rebuild the index from setting page.",
+        "input_placeholder": "Ask me anything related to your documents.\nUse the + button to add new files.",
         "sources": "Sources",
         "status_start": "Starting…",
         "btn_rebuild": "Rebuild index now",
@@ -46,12 +46,13 @@ UI_STRINGS = {
         "lang_label": "Language",
         "lang_hint": "UI + AI language",
         "sheet_title": "Sheet (CSV/Excel view)",
+        "btn_add_files": "Add files to index",
     },
     "zh": {
         "title": "文档 AI 助手",
         "settings": "设置",
         "greeting": "很高兴见到你，{name}。有什么新消息？",
-        "input_placeholder": "您可以询问任何与您的文档相关的问题。\n如果添加了新文档，请从设置页面重建索引。",
+        "input_placeholder": "您可以询问任何与您的文档相关的问题。\n使用 + 按钮添加新文件。",
         "sources": "来源",
         "status_start": "启动中…",
         "btn_rebuild": "立即重建索引",
@@ -61,12 +62,13 @@ UI_STRINGS = {
         "lang_label": "语言",
         "lang_hint": "界面 + AI 语言",
         "sheet_title": "表格（CSV/Excel 视图）",
+        "btn_add_files": "添加文件到索引",
     },
     "th": {
         "title": "ผู้ช่วย AI เอกสาร",
         "settings": "การตั้งค่า",
         "greeting": "ยินดีที่ได้พบคุณ, {name}. มีอะไรใหม่บ้าง?",
-        "input_placeholder": "คุณสามารถสอบถามฉันได้ทุกเรื่องที่เกี่ยวข้องกับเอกสารของคุณ\n หากมีการเพิ่มเอกสารใหม่ โปรดสร้างดัชนีใหม่จากหน้าการตั้งค่า",
+        "input_placeholder": "คุณสามารถสอบถามฉันได้ทุกเรื่องที่เกี่ยวข้องกับเอกสารของคุณ\nใช้ปุ่ม + เพื่อเพิ่มไฟล์ใหม่",
         "sources": "แหล่งอ้างอิง",
         "status_start": "กำลังเริ่ม…",
         "btn_rebuild": "สร้างดัชนีใหม่ตอนนี้",
@@ -76,6 +78,7 @@ UI_STRINGS = {
         "lang_label": "ภาษา",
         "lang_hint": "ภาษา UI + AI",
         "sheet_title": "ตาราง (มุมมอง CSV/Excel)",
+        "btn_add_files": "เพิ่มไฟล์ไปยังดัชนี",
     },
 }
 
@@ -452,10 +455,16 @@ class MainWindow(QWidget):
         self.input_box.setAttribute(Qt.WA_StyledBackground, True)
         self.input_box.setAcceptRichText(False)
 
+        self.add_file_button = QPushButton("＋")
+        self.add_file_button.setObjectName("addFileButton")
+        self.add_file_button.setFixedSize(44, 44)
+        self.add_file_button.setToolTip("Add files to index")
+
         self.send_button = QPushButton("➤")
         self.send_button.setObjectName("sendButton")
         self.send_button.setFixedSize(54, 44)
 
+        input_row.addWidget(self.add_file_button, 0, Qt.AlignVCenter)
         input_row.addWidget(self.input_box, 1)
         input_row.addWidget(self.send_button, 0, Qt.AlignVCenter)
 
@@ -577,6 +586,27 @@ class MainWindow(QWidget):
                 color: rgba(232, 238, 252, 0.55);
             }
 
+            QPushButton#addFileButton {
+                background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 14px;
+                color: #eef3ff;
+                font-size: 20px;
+                font-weight: 900;
+            }
+            QPushButton#addFileButton:hover {
+                background: rgba(255,255,255,0.14);
+                border: 1px solid rgba(255,255,255,0.28);
+            }
+            QPushButton#addFileButton:pressed {
+                background: rgba(255,255,255,0.20);
+            }
+            QPushButton#addFileButton:disabled {
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.10);
+                color: rgba(232, 238, 252, 0.45);
+            }
+
             QLabel#statusLabel {
                 color: rgba(232, 238, 252, 0.82);
                 font-size: 12px;
@@ -666,6 +696,7 @@ class MainWindow(QWidget):
 
         self.input_box.setFixedHeight(int(64 * scale))
         self.send_button.setFixedSize(int(54 * scale), int(44 * scale))
+        self.add_file_button.setFixedSize(int(44 * scale), int(44 * scale))
 
     # ===== Sheet helpers =====
     def _hide_sheet(self):
@@ -786,12 +817,14 @@ class MainWindow(QWidget):
         self.greeting.setText(s["greeting"].format(name=self._user_name))
         self.input_box.setPlaceholderText(s["input_placeholder"])
         self.sheet_title.setText(s.get("sheet_title", "Sheet (CSV/Excel view)"))
+        self.add_file_button.setToolTip(s.get("btn_add_files", "Add files to index"))
 
         if not self.status_label.text().strip():
             self.status_label.setText(s["status_start"])
 
     def set_buttons_enabled(self, enabled: bool):
         self.send_button.setEnabled(enabled)
+        self.add_file_button.setEnabled(enabled)
         self.settings_button.setEnabled(enabled)
 
     def update_status(self, message: str):
