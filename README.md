@@ -18,12 +18,22 @@ A fully offline Windows desktop application that lets you index local documents 
    ```
 
 ## Model Placement
-Place your models in the following paths:
+By default, the app looks for models in:
 ```
 D:\offline_doc_assistant\models\qwen_model.gguf
 D:\offline_doc_assistant\models\embed\  (SentenceTransformer model folder)
 ```
-The app will **not** attempt to download any models.
+You can change these paths (and other settings) via `app_config.ini`. The app will **not** attempt to download any models.
+
+## Configuration (app_config.ini)
+The app reads settings from `app_config.ini` (next to `app.py`). This file controls:
+- Base directory and indexing folders
+- OCR/Tesseract/Poppler/LibreOffice paths
+- Chunking, retrieval, and FAISS tuning values
+- Window/UI behavior
+- Ollama endpoint/model
+
+Update the values in `app_config.ini` and restart the app to apply changes.
 
 ## Running the App
 ```bash
@@ -31,8 +41,8 @@ python app.py
 ```
 
 ## Notes
-- **Scanned PDFs**: If a PDF has no extractable text, the app will warn: “Scanned PDF not supported (needs OCR)”. You must run OCR externally first.
-- **Offline**: The application is fully offline and makes no web requests.
+- **Scanned PDFs**: The app can OCR scanned PDFs when OCR is enabled in `app_config.ini`.
+- **Offline**: The application is fully offline and makes no web requests beyond the local Ollama endpoint you configure.
 
 ## Folder Structure
 ```

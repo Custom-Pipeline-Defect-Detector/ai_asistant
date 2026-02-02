@@ -341,7 +341,7 @@ class RAGEngine:
 
         # Defaults: make it "automatic" without user choosing
         if enable_ocr is None:
-            enable_ocr = True
+            enable_ocr = os.environ.get("ENABLE_OCR", "1").strip().lower() in {"1", "true", "yes", "on"}
         if ocr_lang is None:
             ocr_lang = os.environ.get("OCR_LANG", "auto").strip() or "auto"
         if enable_libreoffice is None:
@@ -350,6 +350,8 @@ class RAGEngine:
         poppler_path = os.environ.get("POPPLER_PATH", "").strip() or None
         pdf_ocr_max_pages_env = os.environ.get("PDF_OCR_MAX_PAGES", "").strip()
         pdf_ocr_max_pages = int(pdf_ocr_max_pages_env) if pdf_ocr_max_pages_env.isdigit() else None
+        scanned_min_chars_env = os.environ.get("SCANNED_PDF_MIN_CHARS", "").strip()
+        scanned_pdf_min_chars = int(scanned_min_chars_env) if scanned_min_chars_env.isdigit() else 60
         # Override chunk size and overlap from environment variables if provided
         chunk_size_env = os.environ.get("CHUNK_SIZE", "").strip().lower()
         if chunk_size_env:
@@ -438,6 +440,7 @@ class RAGEngine:
             enable_ocr=enable_ocr,
             ocr_lang=ocr_lang,
             enable_libreoffice=enable_libreoffice,
+            scanned_pdf_min_chars=scanned_pdf_min_chars,
             pdf_ocr_max_pages=pdf_ocr_max_pages,
             poppler_path=poppler_path,
         )
