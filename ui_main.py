@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QTextEdit,
 )
 
-from formatters import to_rich_html, parse_json_rows, md_table_to_grid
+from formatters import extract_reasoning_blocks, to_rich_html, parse_json_rows, md_table_to_grid
 
 
 LANG_OPTIONS = [
@@ -299,6 +299,7 @@ class MainWindow(QWidget):
         self._is_streaming = False
         self._pending_render = False
         self._stream_render_timer: QTimer | None = None
+        self._expanded_reasoning: set[str] = set()
 
         # ✅ Smart auto-scroll (do NOT force-scroll while user reads older messages)
         self._stick_to_bottom = True
@@ -427,7 +428,9 @@ class MainWindow(QWidget):
         self.chat_transcript = QTextBrowser()
         self.chat_transcript.setObjectName("chatTranscript")
         self.chat_transcript.setOpenExternalLinks(False)
+        self.chat_transcript.setOpenLinks(False)
         self.chat_transcript.setAttribute(Qt.WA_StyledBackground, True)
+        self.chat_transcript.anchorClicked.connect(self._on_chat_anchor_clicked)
 
         # ✅ Hide scrollbars but keep scrolling with wheel/touchpad
         self.chat_transcript.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -788,7 +791,7 @@ class MainWindow(QWidget):
         should_stick = self._stick_to_bottom
 
         blocks = []
-        for m in self._chat_msgs:
+        for i, m in enumerate(self._chat_msgs):
             if m["role"] == "user":
                 safe = self._escape_user_html(m["text"])
                 blocks.append(
@@ -808,7 +811,28 @@ class MainWindow(QWidget):
                     """
                 )
             else:
-                rich = to_rich_html(m["text"])
+                clean_text, reasoning_blocks = extract_reasoning_blocks(m["text"])
+                rich = to_rich_html(clean_text)
+                reasoning_html = ""
+                for block_index, reasoning in enumerate(reasoning_blocks):
+                    reasoning_id = f"r-{i}-{block_index}"
+                    is_open = reasoning_id in self._expanded_reasoning
+                    toggle_label = "Hide reasoning" if is_open else "Show reasoning"
+                    display_style = "display:block;" if is_open else "display:none;"
+                    reasoning_body = to_rich_html(reasoning)
+                    reasoning_html += (
+                        "<div style='margin-top:10px; padding:10px 12px;"
+                        " border-radius:14px; border:1px solid rgba(255,255,255,0.14);"
+                        " background:rgba(255,255,255,0.04);'>"
+                        "<div style='display:flex; justify-content:space-between;"
+                        " align-items:center; gap:12px;'>"
+                        "<div style='font-weight:800; color:#eef3ff;'>Reasoning</div>"
+                        f"<a href='reasoning://{reasoning_id}'"
+                        " style='color:#8ab4ff; text-decoration:none; font-weight:700;'>"
+                        f"{toggle_label}</a></div>"
+                        f"<div style='margin-top:6px; color:#dbe7ff; {display_style}'>"
+                        f"{reasoning_body}</div></div>"
+                    )
                 blocks.append(
                     f"""
                     <div style="margin:10px 0; display:flex; justify-content:flex-start;">
@@ -821,6 +845,7 @@ class MainWindow(QWidget):
                       ">
                         <div style="font-weight:800; color:#eef3ff;">Assistant</div>
                         <div style="margin-top:6px; color:#dbe7ff;">{rich}</div>
+                        {reasoning_html}
                       </div>
                     </div>
                     """
@@ -840,6 +865,19 @@ class MainWindow(QWidget):
                 sb.setValue(min(prev_val, sb.maximum()))
         finally:
             self._programmatic_scroll = False
+
+    def _on_chat_anchor_clicked(self, url):
+        target = url.toString()
+        if not target.startswith("reasoning://"):
+            return
+        reasoning_id = target[len("reasoning://") :]
+        if not reasoning_id:
+            return
+        if reasoning_id in self._expanded_reasoning:
+            self._expanded_reasoning.remove(reasoning_id)
+        else:
+            self._expanded_reasoning.add(reasoning_id)
+        self._render_chat()
 
     def apply_language(self, lang_code: str, user_name: str = "Mir"):
         self._lang = lang_code if lang_code in UI_STRINGS else "en"
@@ -918,6 +956,7 @@ class MainWindow(QWidget):
         self._pending_render = False
         if self._stream_render_timer is not None:
             self._stream_render_timer.stop()
+        self._expanded_reasoning.clear()
 
         # reset smart-scroll defaults
         self._stick_to_bottom = True

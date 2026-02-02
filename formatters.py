@@ -19,6 +19,27 @@ def esc_html(s: str) -> str:
     return html.escape(s)
 
 
+def extract_reasoning_blocks(text: str) -> Tuple[str, List[str]]:
+    reasoning_blocks: List[str] = []
+    cleaned = text
+
+    match = REASONING_PREFIX_RE.match(cleaned)
+    if match:
+        reasoning = match.group(2)
+        remainder = cleaned[match.end() :].lstrip()
+        remainder_label = match.group(4)
+        if remainder and remainder_label:
+            remainder = f"{remainder_label.capitalize()}: {remainder}"
+        reasoning_blocks.append(reasoning)
+        cleaned = remainder
+
+    def _reasoning_repl(m: re.Match) -> str:
+        reasoning_blocks.append(m.group(2))
+        return ""
+
+    cleaned = re.sub(REASONING_BLOCK_RE, _reasoning_repl, cleaned).strip()
+    return cleaned, reasoning_blocks
+
 
 
 def parse_json_rows(text: str) -> Optional[Tuple[List[str], List[List[str]]]]:
