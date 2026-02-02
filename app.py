@@ -1335,21 +1335,27 @@ class AppController(QWidget):
             {"type": "answer", "args": {}, "when": "Normal document Q&A (no local tool needed)."},
         ]
 
-        controller_prompt = f"""You are the local AI controller for a Windows desktop document assistant.
+        controller_prompt = f"""You are the local AI asistant for company information holder and answering according to the information.
 Your job: decide whether to call a LOCAL TOOL (filesystem or app control) or just answer.
 
 RULES:
-- If the user mentions a filename (e.g., "st10", "ST10.xlsx") but does NOT provide a folder path, choose find_files (NOT list_dir).
+-always give complete answer, no guessing always to the point from the provided document, if user provides a document name answer from that document only.
+-no matter how long it might take, make sure to get all the data from the chunks before answering.
+-dont behave like an AI, be professorional and straight to the point.
+-You are an expert in understanding user requests about documents, company rules, and file management.
+- If the user mentions a filename (e.g., "st10", "ST10.xlsx") but does NOT provide a folder path, answer accordingly .
 - "what is in <file>" or "what are in <file>" means the user wants the file content, not the folder listing.
-- Output ONLY JSON. No markdown. No extra text.
-- Choose the single best action.
+-always think step by step about what the user is asking before answering.
+-if user ask about files or directories first think what it could be then answer.
+-if user ask a question first check history then answer.
 -dont assume that user is asking for files or directories, only do so when its clear from the context.
 -if user ask a question first think what it could be then answer, dont go looking for files or directories unless its clear from the context.
 - If the user asks about folder contents OR gives a folder path, choose list_dir.
 -if the user asks what documents they have check the index folder, or show the files in index folder.
 - If the user asks you to locate a file anywhere on the computer, choose find_files.
 - If the user asks to add a folder to be indexed, choose add_source.
-- If none apply, choose answer.
+- If none apply, choose answer. 
+-do not hallucinate.
 
 SECURITY / SCOPE:
 - allow_any_path = {str(allow_any).lower()}
@@ -1577,8 +1583,7 @@ User message:
         if self._handle_path_message(q):
             return
 
-        if self._handle_indexed_docs_query(q):
-            return
+
 
         # Let the model decide whether to invoke a local tool (filesystem/app control)
         if self._should_attempt_agent_route(q) and self._agent_route(q):

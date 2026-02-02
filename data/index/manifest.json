@@ -1,65 +1,14 @@
 {
   "version": 1,
   "files": {
-    "D:\\offline_doc_assistant\\index\\QJ2411029042-ST40一体式配重块装配(1).xlsx": {
-      "active": true,
-      "chunk_ids": [
-        34,
-        35,
-        36,
-        37,
-        38,
-        39,
-        40,
-        41,
-        42,
-        43,
-        44,
-        45,
-        46,
-        47,
-        48,
-        49,
-        50,
-        51
-      ],
-      "mtime": 1748936734,
-      "size": 28885,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.xlsx",
-      "chars": 15790,
-      "warning": "",
-      "error": ""
-    },
-    "D:\\offline_doc_assistant\\index\\在职证明.pdf": {
-      "active": true,
-      "chunk_ids": [
-        352
-      ],
-      "mtime": 1651910010,
-      "size": 6236,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "ocr:pdf(auto)",
-      "chars": 172,
-      "warning": "PDF looked scanned; OCR applied automatically.",
-      "error": ""
-    },
-    "D:\\offline_doc_assistant\\index\\关于召开华东大区一季度市场专题会的通知.pdf": {
-      "active": true,
-      "chunk_ids": [
-        351
-      ],
-      "mtime": 1644902656,
-      "size": 157679,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.pdf",
-      "chars": 851,
-      "warning": "",
-      "error": ""
-    },
     "D:\\offline_doc_assistant\\index\\SF2116018_钱申鹏_毕业论文3-5.pdf": {
       "active": true,
       "chunk_ids": [
+        104,
+        105,
+        106,
+        107,
+        108,
         109,
         110,
         111,
@@ -149,92 +98,23 @@
         195,
         196,
         197,
-        198,
-        199,
-        200,
-        201,
-        202,
-        203,
-        204,
-        205,
-        206,
-        207,
-        208
+        198
       ],
       "mtime": 1728276137,
       "size": 2598202,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.pdf",
       "chars": 87461,
-      "warning": "",
-      "error": ""
-    },
-    "D:\\offline_doc_assistant\\index\\上位机中英文简介.pdf": {
-      "active": true,
-      "chunk_ids": [
-        346,
-        347,
-        348
-      ],
-      "mtime": 1696556014,
-      "size": 1804352,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.pdf",
-      "chars": 2270,
-      "warning": "",
-      "error": ""
-    },
-    "D:\\offline_doc_assistant\\index\\ST10.xlsx": {
-      "active": true,
-      "chunk_ids": [
-        211,
-        212,
-        213,
-        214,
-        215,
-        216,
-        217,
-        218,
-        219,
-        220,
-        221,
-        222,
-        223,
-        224,
-        225,
-        226,
-        227,
-        228,
-        229,
-        230,
-        231
-      ],
-      "mtime": 1747711894,
-      "size": 30098,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.xlsx",
-      "chars": 18044,
-      "warning": "",
-      "error": ""
-    },
-    "D:\\offline_doc_assistant\\index\\ST7.csv": {
-      "active": true,
-      "chunk_ids": [
-        232,
-        233,
-        234
-      ],
-      "mtime": 1751348946,
-      "size": 3272,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.csv",
-      "chars": 2164,
       "warning": "",
       "error": ""
     },
     "D:\\offline_doc_assistant\\index\\QJ2411029045-ST80CAB自动贴标ST90下料及NG品处理（含皮带）(1).xlsx": {
       "active": true,
       "chunk_ids": [
+        86,
+        87,
+        88,
+        89,
         90,
         91,
         92,
@@ -248,44 +128,21 @@
         100,
         101,
         102,
-        103,
-        104,
-        105,
-        106,
-        107,
-        108
+        103
       ],
       "mtime": 1748936746,
       "size": 28157,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.xlsx",
       "chars": 16150,
-      "warning": "",
-      "error": ""
-    },
-    "D:\\offline_doc_assistant\\index\\电机用户手册.pdf": {
-      "active": true,
-      "chunk_ids": [
-        361,
-        362,
-        363,
-        364,
-        365,
-        366,
-        367,
-        368
-      ],
-      "mtime": 1736188102,
-      "size": 6330714,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.pdf",
-      "chars": 7237,
       "warning": "",
       "error": ""
     },
     "D:\\offline_doc_assistant\\index\\QJ2411029043-ST50分体式配重块装配 (1).xlsx": {
       "active": true,
       "chunk_ids": [
+        50,
+        51,
         52,
         53,
         54,
@@ -301,107 +158,190 @@
         64,
         65,
         66,
-        67,
-        68,
-        69,
-        70
+        67
       ],
       "mtime": 1748936738,
       "size": 29168,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.xlsx",
       "chars": 16065,
       "warning": "",
       "error": ""
     },
+    "D:\\offline_doc_assistant\\index\\投标函.pdf": {
+      "active": true,
+      "chunk_ids": [
+        340
+      ],
+      "mtime": 1647481528,
+      "size": 215498,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "ocr:pdf(auto)",
+      "chars": 574,
+      "warning": "PDF looked scanned; OCR applied automatically.",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\在职证明.pdf": {
+      "active": true,
+      "chunk_ids": [
+        339
+      ],
+      "mtime": 1651910010,
+      "size": 6236,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "ocr:pdf(auto)",
+      "chars": 110,
+      "warning": "PDF looked scanned; OCR applied automatically.",
+      "error": ""
+    },
     "D:\\offline_doc_assistant\\index\\ST1 (1).csv": {
       "active": true,
       "chunk_ids": [
-        209,
-        210
+        199,
+        200
       ],
       "mtime": 1745906317,
       "size": 1766,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.csv",
       "chars": 1124,
       "warning": "",
       "error": ""
     },
-    "D:\\offline_doc_assistant\\index\\QJ2405A04001-Pre Charging Station6-24.pdf": {
+    "D:\\offline_doc_assistant\\index\\ST10.xlsx": {
       "active": true,
       "chunk_ids": [
-        10,
-        11,
-        12,
-        13,
-        14,
-        15,
-        16,
-        17,
-        18,
-        19,
-        20,
-        21
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        207,
+        208,
+        209,
+        210,
+        211,
+        212,
+        213,
+        214,
+        215,
+        216,
+        217,
+        218,
+        219,
+        220
       ],
-      "mtime": 1719214086,
-      "size": 2069263,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.pdf",
-      "chars": 10266,
+      "mtime": 1747711894,
+      "size": 30098,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.xlsx",
+      "chars": 18044,
       "warning": "",
       "error": ""
     },
-    "D:\\offline_doc_assistant\\index\\Mir Resume & Certificates (2).pdf": {
+    "D:\\offline_doc_assistant\\index\\上位机中英文简介.pdf": {
       "active": true,
       "chunk_ids": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7
+        331,
+        332,
+        333
       ],
-      "mtime": 1768369545,
-      "size": 6677167,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "ocr:pdf(auto)",
-      "chars": 6754,
-      "warning": "PDF looked scanned; OCR applied automatically.",
+      "mtime": 1696556014,
+      "size": 1804352,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pdf",
+      "chars": 2270,
+      "warning": "",
       "error": ""
     },
     "D:\\offline_doc_assistant\\index\\借款协议书.pdf": {
       "active": true,
       "chunk_ids": [
-        349,
-        350
+        334
       ],
       "mtime": 1646892692,
       "size": 384375,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "ocr:pdf(auto)",
-      "chars": 1175,
+      "chars": 831,
       "warning": "PDF looked scanned; OCR applied automatically.",
       "error": ""
     },
-    "D:\\offline_doc_assistant\\index\\新能源汽车集成电驱在线测试台架(3).docx": {
+    "D:\\offline_doc_assistant\\index\\关于召开华东大区一季度市场专题会的通知.pdf": {
       "active": true,
       "chunk_ids": [
-        354,
-        355,
-        356,
-        357,
-        358,
-        359,
-        360
+        335
       ],
-      "mtime": 1764206075,
-      "size": 2918164,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.docx",
-      "chars": 6305,
+      "mtime": 1644902656,
+      "size": 157679,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pdf",
+      "chars": 851,
+      "warning": "",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\华东001项目情况汇报0724-最终稿.pptx": {
+      "active": true,
+      "chunk_ids": [
+        336,
+        337,
+        338
+      ],
+      "mtime": 1658639684,
+      "size": 68688658,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pptx",
+      "chars": 2823,
+      "warning": "",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\QJ2411029042-ST40一体式配重块装配(1).xlsx": {
+      "active": true,
+      "chunk_ids": [
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "mtime": 1748936734,
+      "size": 28885,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.xlsx",
+      "chars": 15790,
+      "warning": "",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\电机用户手册.pdf": {
+      "active": true,
+      "chunk_ids": [
+        348,
+        349,
+        350,
+        351,
+        352,
+        353,
+        354,
+        355
+      ],
+      "mtime": 1736188102,
+      "size": 6330714,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pdf",
+      "chars": 7237,
       "warning": "",
       "error": ""
     },
@@ -418,34 +358,49 @@
         29,
         30,
         31,
-        32,
-        33
+        32
       ],
       "mtime": 1719214086,
       "size": 2069263,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.pdf",
       "chars": 10266,
       "warning": "",
       "error": ""
     },
-    "D:\\offline_doc_assistant\\index\\Print.pdf": {
+    "D:\\offline_doc_assistant\\index\\新能源汽车集成电驱在线测试台架(3).docx": {
       "active": true,
       "chunk_ids": [
-        8,
-        9
+        341,
+        342,
+        343,
+        344,
+        345,
+        346,
+        347
       ],
-      "mtime": 1760941614,
-      "size": 218801,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.pdf",
-      "chars": 1346,
+      "mtime": 1764206075,
+      "size": 2918164,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.docx",
+      "chars": 6305,
       "warning": "",
       "error": ""
     },
     "D:\\offline_doc_assistant\\index\\UMot优摩特选型手册2025中文版 V1.0.pdf": {
       "active": true,
       "chunk_ids": [
+        224,
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        231,
+        232,
+        233,
+        234,
         235,
         236,
         237,
@@ -538,49 +493,36 @@
         324,
         325,
         326,
-        327,
-        328,
-        329,
-        330,
-        331,
-        332,
-        333,
-        334,
-        335,
-        336,
-        337,
-        338,
-        339,
-        340,
-        341,
-        342
+        327
       ],
       "mtime": 1760509253,
       "size": 32360509,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.pdf",
       "chars": 95174,
       "warning": "",
       "error": ""
     },
-    "D:\\offline_doc_assistant\\index\\一季度重点项目汇报-江苏公司.pptx": {
+    "D:\\offline_doc_assistant\\index\\Print.pdf": {
       "active": true,
       "chunk_ids": [
-        343,
-        344,
-        345
+        9,
+        10
       ],
-      "mtime": 1644902534,
-      "size": 9424861,
-      "last_indexed_at": "2026-02-02T17:03:14",
-      "method": "direct:.pptx",
-      "chars": 2513,
+      "mtime": 1760941614,
+      "size": 218801,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pdf",
+      "chars": 1346,
       "warning": "",
       "error": ""
     },
     "D:\\offline_doc_assistant\\index\\QJ2411029044-ST60按钮弹簧装配&ST70红色按钮装配(1).xlsx": {
       "active": true,
       "chunk_ids": [
+        68,
+        69,
+        70,
         71,
         72,
         73,
@@ -595,33 +537,90 @@
         82,
         83,
         84,
-        85,
-        86,
-        87,
-        88,
-        89
+        85
       ],
       "mtime": 1748936744,
       "size": 30368,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "direct:.xlsx",
       "chars": 16718,
       "warning": "",
       "error": ""
     },
-    "D:\\offline_doc_assistant\\index\\投标函.pdf": {
+    "D:\\offline_doc_assistant\\index\\一季度重点项目汇报-江苏公司.pptx": {
       "active": true,
       "chunk_ids": [
-        353
+        328,
+        329,
+        330
       ],
-      "mtime": 1647481528,
-      "size": 215498,
-      "last_indexed_at": "2026-02-02T17:03:14",
+      "mtime": 1644902534,
+      "size": 9424861,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pptx",
+      "chars": 2513,
+      "warning": "",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\QJ2405A04001-Pre Charging Station6-24.pdf": {
+      "active": true,
+      "chunk_ids": [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21
+      ],
+      "mtime": 1719214086,
+      "size": 2069263,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.pdf",
+      "chars": 10266,
+      "warning": "",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\Mir Resume & Certificates (2).pdf": {
+      "active": true,
+      "chunk_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "mtime": 1768369545,
+      "size": 6677167,
+      "last_indexed_at": "2026-02-02T17:39:23",
       "method": "ocr:pdf(auto)",
-      "chars": 848,
+      "chars": 7899,
       "warning": "PDF looked scanned; OCR applied automatically.",
+      "error": ""
+    },
+    "D:\\offline_doc_assistant\\index\\ST7.csv": {
+      "active": true,
+      "chunk_ids": [
+        221,
+        222,
+        223
+      ],
+      "mtime": 1751348946,
+      "size": 3272,
+      "last_indexed_at": "2026-02-02T17:39:23",
+      "method": "direct:.csv",
+      "chars": 2164,
+      "warning": "",
       "error": ""
     }
   },
-  "next_chunk_id": 369
+  "next_chunk_id": 356
 }
