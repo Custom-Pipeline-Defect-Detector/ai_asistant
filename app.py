@@ -1,12 +1,15 @@
+import fnmatch
+import hashlib
+import json
 import os
 import sys
 import traceback
+from configparser import ConfigParser
+from datetime import datetime
 from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 # --- ADD THIS near the top of app.py (imports) ---
-import subprocess
-import time
-import requests
 
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import (
@@ -24,49 +27,14 @@ from PyQt5.QtWidgets import (
     QToolButton,
 )
 
-from app_config import apply_runtime_env, load_app_config
-
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("app_config.ini")
-CONFIG_PATH = Path(os.environ.get("DOC_ASSISTANT_CONFIG", str(DEFAULT_CONFIG_PATH)))
-APP_CONFIG = load_app_config(CONFIG_PATH)
-apply_runtime_env(APP_CONFIG)
-
-from rag_engine import RAGEngine
+from app_config import APP_CONFIG_SCHEMA, apply_runtime_env, default_app_config, load_app_config, normalize_app_value
+from config_io import append_audit_log, config_to_dict, load_ini_with_backup, atomic_write_ini
+from rag_engine import RAGEngine, default_assistant_config, normalize_assistant_value
 from ui_main import MainWindow
 from worker import WorkerThread
 
-AUTO_DOCS_DIR = APP_CONFIG.auto_docs_dir
-BASE_DIR = APP_CONFIG.base_dir
-EMBED_DIR = APP_CONFIG.embed_model_dir
-DATA_DIR = APP_CONFIG.data_dir
-INDEX_DIR = APP_CONFIG.index_dir
-LOG_DIR = APP_CONFIG.log_dir
-
-SUPPORTED_EXTS = {
-    # text-like
-    ".txt", ".md", ".mdx", ".log", ".ini", ".cfg", ".conf", ".env", ".xml",
-    ".yml", ".yaml", ".tsv", ".tex",
-    ".py", ".js", ".ts", ".tsx", ".jsx",
-    ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cs",
-    ".go", ".rs", ".rb", ".php", ".sql", ".sh", ".bat", ".ps1",
-    ".toml", ".gitignore",
-
-    # office + common
-    ".pdf",
-    ".docx", ".doc", ".odt",
-    ".xlsx", ".xls", ".xlsm", ".xltx", ".xltm", ".ods",
-    ".pptx", ".ppt", ".ppsx", ".potx", ".odp",
-    ".csv", ".json", ".jsonl", ".ndjson",
-    ".html", ".htm",
-    ".rtf",
-    ".epub",
-
-    # images (OCR optional)
-    ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
-}
-
-APP_ICON_ICO = APP_CONFIG.app_icon_ico
-APP_ICON_PNG = APP_CONFIG.app_icon_png
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("app_config.ini")
+CONFIG_PATH = Path(os.environ.get("DOC_ASSISTANT_CONFIG", str(DEFAULT_CONFIG_PATH)))
 
 
 def set_windows_appusermodelid(app_id: str) -> None:
@@ -79,24 +47,129 @@ def set_windows_appusermodelid(app_id: str) -> None:
         pass
 
 
-def collect_auto_docs() -> list[str]:
-    if not AUTO_DOCS_DIR.exists():
-        return []
+def _expand_path(value: str) -> Path:
+    return Path(os.path.expandvars(value)).expanduser()
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _matches_globs(path: Path, globs: Iterable[str]) -> bool:
+    if not globs:
+        return True
+    normalized = str(path)
+    name = path.name
+    for pattern in globs:
+        if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(normalized, pattern):
+            return True
+    return False
+
+
+def collect_auto_docs(config) -> list[str]:
+    sources = (config.index_sources or []) + (config.extra_sources or [])
+    if not sources:
+        sources = [str(config.auto_docs_dir)]
+
+    include_globs = config.include_globs or []
+    exclude_globs = config.exclude_globs or []
+    supported_exts = {ext.lower() for ext in (config.supported_exts or [])}
+    max_bytes = max(0, int(config.max_file_mb)) * 1024 * 1024 if config.max_file_mb else 0
+    max_docs = int(config.max_docs_per_run) if config.max_docs_per_run else 0
+
     docs: list[str] = []
-    for p in AUTO_DOCS_DIR.rglob("*"):
+
+    def accept_path(p: Path) -> bool:
         if not p.is_file():
-            continue
-        # Skip temporary office files (e.g., ~\$ doc names)
+            return False
         if p.name.startswith("~$"):
-            continue
-        # If extension is supported, include it; otherwise include anyway to attempt conversion
-        docs.append(str(p))
+            return False
+        if not config.allow_any_path:
+            try:
+                p.resolve().relative_to(config.base_dir.resolve())
+            except Exception:
+                return False
+        if supported_exts and p.suffix.lower() not in supported_exts:
+            return False
+        if include_globs and not _matches_globs(p, include_globs):
+            return False
+        if exclude_globs and _matches_globs(p, exclude_globs):
+            return False
+        if max_bytes and p.stat().st_size > max_bytes:
+            return False
+        return True
+
+    for src in sources:
+        p = _expand_path(src)
+        if p.is_file():
+            if accept_path(p):
+                docs.append(str(p))
+        elif p.is_dir():
+            for file_path in p.rglob("*"):
+                if accept_path(file_path):
+                    docs.append(str(file_path))
+                    if max_docs and len(docs) >= max_docs:
+                        return docs
+
     return docs
 
 
-def _bool_env(name: str, default: bool = False) -> bool:
-    v = os.environ.get(name, "1" if default else "0").strip().lower()
-    return v in {"1", "true", "yes", "on"}
+def parse_control_blocks(text: str) -> Tuple[str, List[Dict[str, str]]]:
+    actions: List[Dict[str, str]] = []
+    cleaned = text
+    while True:
+        start = cleaned.find("<CONTROL>")
+        end = cleaned.find("</CONTROL>")
+        if start == -1 or end == -1 or end < start:
+            break
+        block = cleaned[start + len("<CONTROL>") : end]
+        cleaned = (cleaned[:start] + cleaned[end + len("</CONTROL>") :]).strip()
+        for line in block.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.upper().startswith("SET "):
+                _, rest = line.split(" ", 1)
+                if "=" not in rest:
+                    actions.append({"type": "ERROR", "detail": f"Invalid SET syntax: {line}"})
+                    continue
+                key, value = rest.split("=", 1)
+                actions.append(
+                    {
+                        "type": "SET",
+                        "key": key.strip(),
+                        "value": _strip_quotes(value),
+                    }
+                )
+                continue
+            if line.upper().startswith("ADD_SOURCE"):
+                _, _, value = line.partition(" ")
+                actions.append({"type": "ADD_SOURCE", "value": _strip_quotes(value)})
+                continue
+            if line.upper().startswith("REMOVE_SOURCE"):
+                _, _, value = line.partition(" ")
+                actions.append({"type": "REMOVE_SOURCE", "value": _strip_quotes(value)})
+                continue
+            if line.upper() == "REBUILD_INDEX":
+                actions.append({"type": "REBUILD_INDEX"})
+                continue
+            if line.upper() == "CLEAR_INDEX":
+                actions.append({"type": "CLEAR_INDEX"})
+                continue
+            if line.upper() == "RELOAD_CONFIG":
+                actions.append({"type": "RELOAD_CONFIG"})
+                continue
+            if line.upper() == "LIST_SOURCES":
+                actions.append({"type": "LIST_SOURCES"})
+                continue
+            if line.upper() == "RESCAN_DISK":
+                actions.append({"type": "RESCAN_DISK"})
+                continue
+            actions.append({"type": "ERROR", "detail": f"Unknown control action: {line}"})
+    return cleaned.strip(), actions
 
 
 class AppController(QWidget):
@@ -104,17 +177,20 @@ class AppController(QWidget):
         super().__init__()
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+        self.config_path = CONFIG_PATH
+        self.config = load_app_config(self.config_path)
+        apply_runtime_env(self.config)
 
         window_flags = Qt.FramelessWindowHint | Qt.Window
-        if APP_CONFIG.always_on_top:
+        if self.config.always_on_top:
             window_flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(window_flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setMouseTracking(True)
 
-        self.setWindowTitle(APP_CONFIG.window_title)
-        self.setMinimumSize(APP_CONFIG.min_width, APP_CONFIG.min_height)
+        self.setWindowTitle(self.config.window_title)
+        self.setMinimumSize(self.config.min_width, self.config.min_height)
 
         # ---------- resize config ----------
         self._resize_margin = 6
@@ -176,12 +252,32 @@ class AppController(QWidget):
         # RAG / app logic
         # =========================
         self.rag = RAGEngine(
-            base_dir=BASE_DIR,
-            embed_model_dir=EMBED_DIR,
-            index_dir=INDEX_DIR,
-            log_dir=LOG_DIR,
-            ollama_base_url=APP_CONFIG.ollama_base_url,
-            ollama_model=APP_CONFIG.ollama_model,
+            base_dir=self.config.base_dir,
+            embed_model_dir=self.config.embed_model_dir,
+            index_dir=self.config.index_dir,
+            log_dir=self.config.log_dir,
+            memory_dir=self.config.memory_dir,
+            ollama_base_url=self.config.ollama_base_url,
+            ollama_model=self.config.ollama_model,
+            ollama_timeout_s=self.config.ollama_timeout_s,
+            generation_temperature=self.config.generation_temperature,
+            generation_top_p=self.config.generation_top_p,
+            generation_num_predict=self.config.generation_num_predict,
+            retrieval_min_score=self.config.retrieval_min_score,
+            embed_batch_size=self.config.embed_batch_size,
+            hnsw_m=self.config.hnsw_m,
+            hnsw_ef_construction=self.config.hnsw_ef_construction,
+            hnsw_ef_search=self.config.hnsw_ef_search,
+            enable_ocr=self.config.enable_ocr,
+            ocr_lang=self.config.ocr_lang,
+            enable_libreoffice=self.config.enable_libreoffice,
+            poppler_path=self.config.poppler_path,
+            tesseract_exe=self.config.tesseract_exe,
+            soffice_path=self.config.soffice_path,
+            pdf_ocr_max_pages=self.config.pdf_ocr_max_pages,
+            scanned_pdf_min_chars=self.config.scanned_pdf_min_chars,
+            pdf_dpi=self.config.pdf_dpi,
+            libreoffice_timeout_s=self.config.libreoffice_timeout_s,
         )
 
         self._busy = False
@@ -191,17 +287,11 @@ class AppController(QWidget):
         user_name = ini.get("user", {}).get("name", "Mir")
         lang = ini.get("user", {}).get("language", "en") or "en"
         self.ui.apply_language(lang, user_name=user_name)
-        self.ui.set_logo_height(APP_CONFIG.logo_height_px)
+        self.ui.set_logo_height(self.config.logo_height_px)
 
         self.ui.send_button.clicked.connect(self.on_send)
 
-        # show OCR/LO settings hint in status (driven by env vars)
-        ocr_on = _bool_env("ENABLE_OCR", True)
-        lo_on = _bool_env("ENABLE_LIBREOFFICE", True)
-        self.ui.update_status(
-            f"Ready. Place documents in {AUTO_DOCS_DIR} "
-            f"(OCR={'ON' if ocr_on else 'OFF'}, LibreOffice={'ON' if lo_on else 'OFF'})"
-        )
+        self._update_status_ready()
         self._apply_layout()
 
     # =========================
@@ -223,6 +313,204 @@ class AppController(QWidget):
 
         x_set = x_min - gap - self.settings_btn.width()
         self.settings_btn.move(x_set, y)
+
+    def _apply_window_flags(self):
+        window_flags = Qt.FramelessWindowHint | Qt.Window
+        if self.config.always_on_top:
+            window_flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(window_flags)
+        self.show()
+
+    def _format_status(self, template: str) -> str:
+        return template.format(
+            auto_docs_dir=self.config.auto_docs_dir,
+            ocr_status="ON" if self.config.enable_ocr else "OFF",
+            libreoffice_status="ON" if self.config.enable_libreoffice else "OFF",
+            source_count=len(self.config.index_sources) + len(self.config.extra_sources),
+            index_dir=self.config.index_dir,
+            data_dir=self.config.data_dir,
+        )
+
+    def _update_status_ready(self):
+        self.ui.update_status(self._format_status(self.config.status_template))
+
+    def _load_app_config_parser(self) -> ConfigParser:
+        defaults = default_app_config(self.config.base_dir)
+        return load_ini_with_backup(self.config_path, defaults)
+
+    def _load_assistant_config_parser(self) -> ConfigParser:
+        defaults = default_assistant_config()
+        return load_ini_with_backup(self.rag.ini_path, defaults)
+
+    def _hash_user_message(self, message: str) -> str:
+        return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+    def _apply_config_to_runtime(self, config) -> None:
+        self.rag.apply_runtime_config(
+            base_dir=config.base_dir,
+            embed_model_dir=config.embed_model_dir,
+            index_dir=config.index_dir,
+            log_dir=config.log_dir,
+            memory_dir=config.memory_dir,
+            ollama_base_url=config.ollama_base_url,
+            ollama_model=config.ollama_model,
+            ollama_timeout_s=config.ollama_timeout_s,
+            generation_temperature=config.generation_temperature,
+            generation_top_p=config.generation_top_p,
+            generation_num_predict=config.generation_num_predict,
+            retrieval_min_score=config.retrieval_min_score,
+            embed_batch_size=config.embed_batch_size,
+            hnsw_m=config.hnsw_m,
+            hnsw_ef_construction=config.hnsw_ef_construction,
+            hnsw_ef_search=config.hnsw_ef_search,
+            enable_ocr=config.enable_ocr,
+            ocr_lang=config.ocr_lang,
+            enable_libreoffice=config.enable_libreoffice,
+            poppler_path=config.poppler_path,
+            tesseract_exe=config.tesseract_exe,
+            soffice_path=config.soffice_path,
+            pdf_ocr_max_pages=config.pdf_ocr_max_pages,
+            scanned_pdf_min_chars=config.scanned_pdf_min_chars,
+            pdf_dpi=config.pdf_dpi,
+            libreoffice_timeout_s=config.libreoffice_timeout_s,
+        )
+
+    def _apply_config_to_ui(self, config) -> None:
+        self.config = config
+        apply_runtime_env(self.config)
+        self._apply_window_flags()
+        self.setWindowTitle(self.config.window_title)
+        self.setMinimumSize(self.config.min_width, self.config.min_height)
+        self.ui.set_logo_height(self.config.logo_height_px)
+        self._update_status_ready()
+
+    def _apply_control_actions(
+        self,
+        actions: List[Dict[str, str]],
+        user_message: str,
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[List[str], bool, bool, Optional[List[str]]]:
+        summaries: List[str] = []
+        config_changed = False
+        index_changed = False
+        listed_sources: Optional[List[str]] = None
+        errors: List[str] = []
+
+        app_cfg = self._load_app_config_parser()
+        assistant_cfg = self._load_assistant_config_parser()
+        app_before = config_to_dict(app_cfg)
+        assistant_before = config_to_dict(assistant_cfg)
+
+        def emit(msg: str):
+            if progress:
+                progress(msg)
+
+        for action in actions:
+            action_type = action.get("type", "").upper()
+            if action_type == "ERROR":
+                errors.append(action.get("detail", "Invalid action"))
+                continue
+            if action_type == "SET":
+                key = action.get("key", "")
+                value = action.get("value", "")
+                if "." not in key:
+                    errors.append(f"Invalid SET key: {key}")
+                    continue
+                section, option = key.split(".", 1)
+                section = section.strip().lower()
+                option = option.strip().lower()
+                try:
+                    if section in APP_CONFIG_SCHEMA:
+                        _, normalized = normalize_app_value(section, option, value)
+                        if section not in app_cfg:
+                            app_cfg[section] = {}
+                        app_cfg[section][option] = normalized
+                        config_changed = True
+                        if section == "index" or (section == "paths" and option in {"auto_docs_dir", "index_dir"}):
+                            index_changed = True
+                        summaries.append(f"Set {section}.{option}")
+                    else:
+                        _, normalized = normalize_assistant_value(section, option, value)
+                        if section not in assistant_cfg:
+                            assistant_cfg[section] = {}
+                        assistant_cfg[section][option] = normalized
+                        config_changed = True
+                        summaries.append(f"Set {section}.{option} (assistant)")
+                except Exception as ex:
+                    errors.append(str(ex))
+                continue
+            if action_type in {"ADD_SOURCE", "REMOVE_SOURCE"}:
+                value = action.get("value", "").strip()
+                if not value:
+                    errors.append(f"Missing source for {action_type}")
+                    continue
+                sources_raw = app_cfg.get("index", "sources", fallback="")
+                sources = [s for s in sources_raw.split(";") if s.strip()]
+                if action_type == "ADD_SOURCE":
+                    if value not in sources:
+                        sources.append(value)
+                        if "index" not in app_cfg:
+                            app_cfg["index"] = {}
+                        app_cfg["index"]["sources"] = "; ".join(sources)
+                        config_changed = True
+                        index_changed = True
+                        summaries.append(f"Added source: {value}")
+                else:
+                    if value in sources:
+                        sources = [s for s in sources if s != value]
+                        if "index" not in app_cfg:
+                            app_cfg["index"] = {}
+                        app_cfg["index"]["sources"] = "; ".join(sources)
+                        config_changed = True
+                        index_changed = True
+                        summaries.append(f"Removed source: {value}")
+                continue
+            if action_type == "REBUILD_INDEX":
+                index_changed = True
+                summaries.append("Rebuild index")
+                continue
+            if action_type == "CLEAR_INDEX":
+                summaries.append("Clear index")
+                index_changed = True
+                self.rag.clear_index()
+                continue
+            if action_type == "RELOAD_CONFIG":
+                summaries.append("Reload config")
+                config_changed = True
+                continue
+            if action_type == "LIST_SOURCES":
+                sources_raw = app_cfg.get("index", "sources", fallback="")
+                listed_sources = [s.strip() for s in sources_raw.split(";") if s.strip()]
+                summaries.append("Listed sources")
+                continue
+            if action_type == "RESCAN_DISK":
+                index_changed = True
+                summaries.append("Rescan disk")
+                continue
+
+        if errors:
+            summaries.append("Errors: " + "; ".join(errors))
+
+        if config_changed:
+            atomic_write_ini(self.config_path, app_cfg)
+            atomic_write_ini(self.rag.ini_path, assistant_cfg)
+
+        audit_payload = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "user_message_hash": self._hash_user_message(user_message),
+            "actions": actions,
+            "errors": errors,
+            "diff": {
+                "app_config": {"before": app_before, "after": config_to_dict(app_cfg)},
+                "assistant_ini": {"before": assistant_before, "after": config_to_dict(assistant_cfg)},
+            },
+        }
+        append_audit_log(self.config.log_dir / "config_audit.log", audit_payload)
+
+        if config_changed:
+            emit("Reloading configuration…")
+
+        return summaries, config_changed, index_changed, listed_sources
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -442,10 +730,10 @@ class AppController(QWidget):
 
         settings = res.get("settings", {}) or {}
         hints = []
-        if not settings.get("enable_ocr", _bool_env("ENABLE_OCR", False)):
-            hints.append("Tip: set ENABLE_OCR=1 to index scanned PDFs/images (after installing OCR deps).")
-        if not settings.get("enable_libreoffice", _bool_env("ENABLE_LIBREOFFICE", True)):
-            hints.append("Tip: set ENABLE_LIBREOFFICE=1 (and install LibreOffice) to index .doc/.odt/.ods/.odp/.ppt/.xls.")
+        if not settings.get("enable_ocr", self.config.enable_ocr):
+            hints.append("Tip: enable OCR in app_config.ini to index scanned PDFs/images (after installing OCR deps).")
+        if not settings.get("enable_libreoffice", self.config.enable_libreoffice):
+            hints.append("Tip: enable LibreOffice in app_config.ini to index .doc/.odt/.ods/.odp/.ppt/.xls.")
 
         msg = "Some files were not indexed:\n\n" + "\n".join(lines)
         if hints:
@@ -454,14 +742,14 @@ class AppController(QWidget):
         QMessageBox.information(self, "Indexing report", msg)
 
     def _ensure_index(self, after_ok=None):
-        files = collect_auto_docs()
+        files = collect_auto_docs(self.config)
         if not files:
-            self.ui.update_status(f"No documents found in: {AUTO_DOCS_DIR}")
+            self.ui.update_status(f"No documents found in sources: {', '.join(self.config.index_sources)}")
             QMessageBox.warning(
                 self,
                 "No documents found",
-                f"No documents found in:\n{AUTO_DOCS_DIR}\n\n"
-                f"Place files of any type into this folder to index them.",
+                "No documents found in configured sources.\n\n"
+                "Add sources in app_config.ini or use control commands to add paths.",
             )
             return
 
@@ -475,22 +763,14 @@ class AppController(QWidget):
                 return
 
         def do_build():
-            # Read chunk sizing from environment; default to full document (0) for chunk_size and 0 for overlap
-            cs_env = os.environ.get("CHUNK_SIZE", "").strip()
-            ov_env = os.environ.get("CHUNK_OVERLAP", "").strip()
-            try:
-                chunk_size_val = int(cs_env) if cs_env else 0
-            except Exception:
-                chunk_size_val = 0
-            try:
-                overlap_val = int(ov_env) if ov_env else 0
-            except Exception:
-                overlap_val = 0
             return self.rag.build_index(
                 files,
                 progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
-                chunk_size=chunk_size_val,
-                overlap=overlap_val,
+                chunk_size=self.config.chunk_size,
+                overlap=self.config.chunk_overlap,
+                enable_ocr=self.config.enable_ocr,
+                ocr_lang=self.config.ocr_lang,
+                enable_libreoffice=self.config.enable_libreoffice,
             )
 
         def on_ok(res):
@@ -532,25 +812,93 @@ class AppController(QWidget):
         def _after_index(_):
             self.ui.begin_assistant_stream()
 
-            def do_answer_stream():
-                # Use configurable TOP_K for retrieval; default to 6 for fast answering
-                top_k_env = os.environ.get("TOP_K", "").strip()
-                try:
-                    top_k_val = int(top_k_env) if top_k_env else 6
-                except Exception:
-                    top_k_val = 6
-                return self.rag.answer_question_stream(
+            def do_answer():
+                progress = lambda s: self._thread.progress.emit(s) if self._thread else None
+                top_k_val = self.config.retrieval_top_k
+
+                initial = self.rag.generate_answer(
                     q,
-                    progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
+                    progress=progress,
                     top_k=top_k_val,
-                    on_token=lambda tok: self._thread.partial.emit(tok) if self._thread else None,
+                    allow_control=self.config.agent_enable_control,
                 )
+
+                clean_text, actions = parse_control_blocks(initial.get("answer", ""))
+                if not actions:
+                    final_answer = clean_text or initial.get("answer", "")
+                    self.rag.record_interaction(q, final_answer)
+                    return {
+                        "answer": final_answer,
+                        "sources": initial.get("sources", []),
+                        "actions": [],
+                        "config": None,
+                    }
+
+                summaries, config_changed, index_changed, listed_sources = self._apply_control_actions(
+                    actions,
+                    q,
+                    progress=progress,
+                )
+
+                updated_config = self.config
+                if config_changed:
+                    updated_config = load_app_config(self.config_path)
+                    self._apply_config_to_runtime(updated_config)
+
+                rebuild_requested = any(
+                    action.get("type") in {"REBUILD_INDEX", "RESCAN_DISK"}
+                    for action in actions
+                )
+                source_changed = any(
+                    action.get("type") in {"ADD_SOURCE", "REMOVE_SOURCE"}
+                    for action in actions
+                )
+                clear_requested = any(action.get("type") == "CLEAR_INDEX" for action in actions)
+
+                if index_changed and not clear_requested and (
+                    rebuild_requested or (source_changed and updated_config.agent_auto_rebuild_index)
+                ):
+                    files = collect_auto_docs(updated_config)
+                    if files:
+                        self.rag.build_index(
+                            files,
+                            progress=progress,
+                            chunk_size=updated_config.chunk_size,
+                            overlap=updated_config.chunk_overlap,
+                            enable_ocr=updated_config.enable_ocr,
+                            ocr_lang=updated_config.ocr_lang,
+                            enable_libreoffice=updated_config.enable_libreoffice,
+                        )
+
+                final = self.rag.generate_answer(
+                    q,
+                    progress=progress,
+                    top_k=updated_config.retrieval_top_k,
+                    allow_control=False,
+                )
+                final_answer = final.get("answer", "")
+                self.rag.record_interaction(q, final_answer)
+
+                if listed_sources:
+                    summaries.append("Sources: " + "; ".join(listed_sources))
+
+                return {
+                    "answer": final_answer,
+                    "sources": final.get("sources", []),
+                    "actions": summaries,
+                    "config": updated_config,
+                }
 
             def on_ok(res):
                 ans = res.get("answer", "")
                 sources = res.get("sources", [])
+                actions = res.get("actions") or []
+                if actions:
+                    ans = ans + "\n\nActions taken: " + "; ".join(actions)
                 self.ui.finalize_assistant_stream(ans)
                 self.ui.update_sources_text("\n".join(sources))
+                if res.get("config"):
+                    self._apply_config_to_ui(res["config"])
                 self.ui.update_status("Done.")
 
             def on_err(err):
@@ -558,10 +906,9 @@ class AppController(QWidget):
                 QMessageBox.critical(self, "Answer Error", err)
 
             self._start_worker(
-                fn=do_answer_stream,
+                fn=do_answer,
                 on_ok=on_ok,
                 on_err=on_err,
-                on_partial=self.ui.update_assistant_stream,
             )
 
         self._ensure_index(after_ok=_after_index)
@@ -571,16 +918,16 @@ class AppController(QWidget):
         current_lang = ini.get("user", {}).get("language", "en") or "en"
         user_name = ini.get("user", {}).get("name", "Mir")
 
-        docs = collect_auto_docs()
+        docs = collect_auto_docs(self.config)
         indexed = self.rag.get_indexed_docs()
         summary = self.rag.get_chat_summary()
 
-        ocr_on = _bool_env("ENABLE_OCR", True)
-        lo_on = _bool_env("ENABLE_LIBREOFFICE", True)
-        ocr_lang = os.environ.get("OCR_LANG", "eng")
+        ocr_on = self.config.enable_ocr
+        lo_on = self.config.enable_libreoffice
+        ocr_lang = self.config.ocr_lang
 
         info = (
-            f"自动文档文件夹： {AUTO_DOCS_DIR}\n"
+            f"自动文档文件夹： {self.config.auto_docs_dir}\n"
             f"目前找到的文件：{len(docs)}\n"
             f"已索引的文档： {len(indexed)}\n"
             f"OCR={'ON' if ocr_on else 'OFF'} (lang={ocr_lang})\n"
@@ -653,11 +1000,11 @@ def excepthook(exc_type, exc, tb):
         print(msg, file=sys.stderr)
 
 
-def load_app_icon() -> QIcon:
-    if APP_ICON_ICO.exists():
-        return QIcon(str(APP_ICON_ICO))
-    if APP_ICON_PNG.exists():
-        return QIcon(str(APP_ICON_PNG))
+def load_app_icon(config) -> QIcon:
+    if config.app_icon_ico.exists():
+        return QIcon(str(config.app_icon_ico))
+    if config.app_icon_png.exists():
+        return QIcon(str(config.app_icon_png))
     return QIcon()
 
 
@@ -667,7 +1014,8 @@ def main():
 
     app = QApplication(sys.argv)
 
-    icon = load_app_icon()
+    cfg = load_app_config(CONFIG_PATH)
+    icon = load_app_icon(cfg)
     if not icon.isNull():
         app.setWindowIcon(icon)
 
