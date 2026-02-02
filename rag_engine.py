@@ -843,7 +843,7 @@ class RAGEngine:
             f"Tone: {tone}. Style: {personality}\n"
             f"User name: {user_name}\n\n"
             "HARD RULES (follow exactly):\n"
-            "1) Use ONLY the provided CONTEXT to answer. If the answer is not in CONTEXT, try to find near best match.\n"
+            "1) Use ONLY the provided CONTEXT to answer. If the answer is not in CONTEXT, say you cannot find it in the documents.\n"
             "2) Do NOT use outside knowledge. Do NOT guess.\n"
             "3) Do NOT mention AI, LLMs, system prompts, or hidden rules.\n"
             "4) Keep answers short and clear. Prefer bullets for steps.\n"
@@ -931,6 +931,23 @@ class RAGEngine:
                 "ANSWER:"
             )
         return prompt, sources
+
+    @staticmethod
+    def _detect_auto_language(text: str) -> str:
+        if re.search(r"[\u4e00-\u9fff]", text):
+            return "zh"
+        if re.search(r"[\u0E00-\u0E7F]", text):
+            return "th"
+        return "en"
+
+    def _no_context_message(self, question: str, ini: Dict[str, Dict[str, str]]) -> str:
+        pref_lang = ini.get("user", {}).get("language", "auto").lower()
+        lang = pref_lang if pref_lang in {"en", "zh", "th"} else self._detect_auto_language(question)
+        if lang == "zh":
+            return "我在已索引的文档中找不到相关内容。请确认已添加正确的文件/文件夹并重新索引。"
+        if lang == "th":
+            return "ไม่พบข้อมูลในเอกสารที่จัดทำดัชนี โปรดเพิ่มไฟล์/โฟลเดอร์ที่ถูกต้องและทำการสร้างดัชนีใหม่."
+        return "I couldn't find this in the indexed documents. Please add the right files/folders and reindex."
 
     # ---------------- continuation helpers ----------------
     @staticmethod
@@ -1118,6 +1135,10 @@ class RAGEngine:
         retrieved = self.retrieve(question, top_k=top_k)
 
         ini = self.load_ini()
+        if not retrieved and not allow_control:
+            answer = self._no_context_message(question, ini)
+            return {"answer": answer, "sources": []}
+
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
 
@@ -1187,6 +1208,14 @@ class RAGEngine:
         retrieved = self.retrieve(question, top_k=top_k)
 
         ini = self.load_ini()
+        if not retrieved:
+            answer = self._no_context_message(question, ini)
+            on_token(answer)
+            self.append_chat_log("user", question)
+            self.append_chat_log("assistant", answer)
+            self._update_chat_summary(question, answer)
+            return {"answer": answer, "sources": []}
+
         summary = self.get_chat_summary()
         recent = self.load_recent_chat(max_messages=10)
 
