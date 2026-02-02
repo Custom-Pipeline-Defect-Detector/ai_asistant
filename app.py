@@ -1,4 +1,5 @@
 import fnmatch
+import re
 import hashlib
 import json
 import os
@@ -71,6 +72,7 @@ def _matches_globs(path: Path, globs: Iterable[str]) -> bool:
             return True
     return False
 
+
 def _walk_all_paths(root: Path) -> List[str]:
     """Utility for simple wildcard matching over the base_dir tree (best-effort)."""
     try:
@@ -80,7 +82,6 @@ def _walk_all_paths(root: Path) -> List[str]:
         return [str(p) for p in root.rglob("*")]
     except Exception:
         return []
-
 
 
 def collect_auto_docs(config) -> list[str]:
@@ -905,6 +906,10 @@ class AppController(QWidget):
         if not raw:
             return False
 
+        # Natural-language directory listing requests
+        if re.search(r"\b(what|which|list|show)\b.*\b(files?|folders?|contents?)\b", raw.lower()) and self._extract_windows_path(raw):
+            return self._handle_list_dir_request(raw)
+
         # --- Control commands ---
         if raw.startswith("/"):
             return self._handle_control_command(raw)
@@ -1000,7 +1005,9 @@ class AppController(QWidget):
                 "• /add <path> — add a folder as a source (persists to app_config.ini)\n"
                 "• /reindex — rebuild index\n"
                 "• /clear — clear chat\n"
-                "You can also paste a file path to add+index it."
+                "You can also paste a file path to add+index it.\n"
+                "• /ls <folder> — list files in a folder\n"
+                "• /find <name or pattern> — search files in your configured sources"
             )
             self.ui.update_status("Ready")
             return True
@@ -1040,7 +1047,432 @@ class AppController(QWidget):
                 return True
             return self._add_source_folder_and_reindex(p)
 
+        if cmd in {"/ls", "/dir"}:
+            if not arg:
+                self.ui.append_assistant_message("Usage: /ls <folder-path>")
+                return True
+            return self._handle_list_dir_request(arg)
+
+        if cmd == "/find":
+            if not arg:
+                self.ui.append_assistant_message("Usage: /find <filename or keywords>\nExample: /find invoice 2024.pdf")
+                return True
+            return self._handle_find_request(arg)
+
         return False
+
+    # =========================
+    # FIXED: these are now REAL methods on AppController
+    # =========================
+    def _extract_windows_path(self, text: str) -> Optional[str]:
+        # Best-effort: grab a Windows path like C:\foo\bar or UNC paths.
+        # Supports Chinese characters and parentheses.
+        if not text:
+            return None
+        t = text.strip()
+
+        # If the whole string is a path token already, return it.
+        if re.search(r"^[A-Za-z]:\\", t) or t.startswith("\\"):
+            return t
+
+        # Look for the last drive path inside the string.
+        m = re.search(r"([A-Za-z]:\\[^\n\r\t]+)", t)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+
+        # Look for UNC path
+        m = re.search(r"(\\\\[^\n\r\t]+)", t)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+
+        return None
+
+    def _format_dir_listing(self, folder: Path, entries: List[os.DirEntry], truncated: bool) -> str:
+        lines = []
+        lines.append(f"**Folder:** `{folder}`")
+        lines.append("")
+        dirs = [e for e in entries if e.is_dir(follow_symlinks=False)]
+        files = [e for e in entries if e.is_file(follow_symlinks=False)]
+
+        lines.append(
+            f"**{len(dirs)} folder(s), {len(files)} file(s)**" + (" (showing first results)" if truncated else "")
+        )
+        lines.append("")
+        if dirs:
+            lines.append("**Folders**")
+            for e in dirs:
+                lines.append(f"• 📁 {e.name}")
+            lines.append("")
+        if files:
+            lines.append("**Files**")
+            for e in files:
+                try:
+                    size = e.stat(follow_symlinks=False).st_size
+                except Exception:
+                    size = None
+                if size is None:
+                    lines.append(f"• 📄 {e.name}")
+                else:
+                    lines.append(f"• 📄 {e.name} — {size:,} bytes")
+        if not dirs and not files:
+            lines.append("_Empty folder._")
+
+        lines.append("")
+        lines.append("Tip: paste a file path to add it to the index, or use `/add <folder>` to index the whole folder.")
+        return "\n".join(lines)
+
+    def _handle_list_dir_request(self, text: str) -> bool:
+        # Accept direct folder path, or a natural-language request containing a path.
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        # If user wrote "what files are in this location <path>", extract the path.
+        candidate = self._extract_windows_path(raw)
+        if candidate is None:
+            # fallback: treat as-is
+            candidate = raw
+
+        candidate = candidate.strip().strip("<>[](){}.,;")
+        candidate = os.path.expandvars(os.path.expanduser(candidate))
+        folder = Path(candidate)
+
+        if not folder.exists():
+            self.ui.append_assistant_message(f"I can’t access that path (not found): `{folder}`")
+            self.ui.update_status("Ready")
+            return True
+        if not folder.is_dir():
+            self.ui.append_assistant_message(f"That isn’t a folder: `{folder}`")
+            self.ui.update_status("Ready")
+            return True
+
+        # Respect allow_any_path: if disabled, only allow within base_dir
+        if not self.config.allow_any_path:
+            try:
+                folder.resolve().relative_to(self.config.base_dir.resolve())
+            except Exception:
+                self.ui.append_assistant_message(
+                    "That folder is outside your allowed base directory.\n"
+                    f"Allowed base: `{self.config.base_dir}`\n\n"
+                    "If you want to allow any path, set `allow_any_path = true` in app_config.ini."
+                )
+                self.ui.update_status("Ready")
+                return True
+
+        # List entries (limit for UI)
+        max_entries = 200
+        try:
+            with os.scandir(str(folder)) as it:
+                entries = sorted(list(it), key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower()))
+        except Exception as e:
+            self.ui.append_assistant_message(f"Couldn’t read that folder: `{folder}`\nError: {e}")
+            self.ui.update_status("Ready")
+            return True
+
+        truncated = len(entries) > max_entries
+        entries = entries[:max_entries]
+
+        msg = self._format_dir_listing(folder, entries, truncated)
+        self.ui.append_assistant_message(msg)
+        self.ui.update_status("Ready")
+        return True
+
+    def _handle_find_request(self, query: str) -> bool:
+        needle = (query or "").strip().strip('"').strip("'")
+        if not needle:
+            return False
+
+        # Determine roots to search
+        roots = []
+        sources = (self.config.index_sources or []) + (self.config.extra_sources or [])
+        if not sources:
+            sources = [str(self.config.auto_docs_dir)]
+        for src in sources:
+            p = _expand_path(src)
+            if p.exists():
+                roots.append(p)
+
+        # If allow_any_path is false, restrict to base_dir
+        if not self.config.allow_any_path:
+            base = self.config.base_dir.resolve()
+            filtered = []
+            for r in roots:
+                try:
+                    r.resolve().relative_to(base)
+                    filtered.append(r)
+                except Exception:
+                    # skip roots outside base
+                    continue
+            roots = filtered or [base]
+
+        # Search (best-effort) with limits
+        include_globs = self.config.include_globs or []
+        exclude_globs = self.config.exclude_globs or []
+        supported_exts = {ext.lower() for ext in (self.config.supported_exts or [])}
+
+        max_hits = 50
+        max_scanned = 15000
+        hits = []
+        scanned = 0
+
+        # simple tokenization for keyword matching
+        tokens = [t for t in re.split(r"\s+", needle.lower()) if t]
+
+        def is_excluded(p: Path) -> bool:
+            if exclude_globs and _matches_globs(p, exclude_globs):
+                return True
+            if include_globs and not _matches_globs(p, include_globs):
+                return True
+            if supported_exts and p.suffix.lower() not in supported_exts:
+                return True
+            return False
+
+        for root in roots:
+            if scanned >= max_scanned or len(hits) >= max_hits:
+                break
+            if root.is_file():
+                scanned += 1
+                rp = root
+                name = rp.name.lower()
+                if all(t in name for t in tokens) and not is_excluded(rp):
+                    hits.append(rp)
+                continue
+
+            try:
+                for p in root.rglob("*"):
+                    if scanned >= max_scanned or len(hits) >= max_hits:
+                        break
+                    scanned += 1
+                    if not p.is_file():
+                        continue
+                    if is_excluded(p):
+                        continue
+                    name = p.name.lower()
+                    if all(t in name for t in tokens):
+                        hits.append(p)
+            except Exception:
+                continue
+
+        if not hits:
+            self.ui.append_assistant_message(
+                f"No matches found for `{needle}` (scanned ~{scanned:,} paths).\n\n"
+                "Try a shorter query or add more sources with `/add <folder>`."
+            )
+            self.ui.update_status("Ready")
+            return True
+
+        lines = [f"Found **{len(hits)}** match(es) for `{needle}` (scanned ~{scanned:,} paths):", ""]
+        for p in hits[:max_hits]:
+            lines.append(f"• `{p}`")
+        if len(hits) >= max_hits:
+            lines.append("")
+            lines.append(f"_Showing first {max_hits} results._")
+
+        lines.append("")
+        lines.append("Tip: paste any file path above to add+index it automatically.")
+        self.ui.append_assistant_message("\n".join(lines))
+        self.ui.update_status("Ready")
+        return True
+
+    # =========================
+    # AI Tool Router (agent control)
+    # =========================
+    @staticmethod
+    def _extract_first_json(text: str) -> Optional[dict]:
+        """Best-effort: extract the first JSON object from a model response."""
+        if not text:
+            return None
+        # direct parse
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        # try to find a JSON object in the text
+        start = text.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        for i in range(start, len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    snippet = text[start : i + 1]
+                    try:
+                        obj = json.loads(snippet)
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        return None
+        return None
+
+    def _agent_route(self, user_text: str) -> bool:
+        """Let the LLM decide whether to invoke a local tool (filesystem / indexing / UI control).
+        Returns True if a tool action was executed and we should stop normal Q&A for this turn.
+        """
+        if not getattr(self.config, "agent_enable_control", False):
+            return False
+
+        # Provide tool schema + context to the model
+        allow_any = bool(getattr(self.config, "allow_any_path", False))
+        base_dir = str(getattr(self.config, "base_dir", Path.cwd()))
+        sources = (self.config.index_sources or []) + (self.config.extra_sources or [])
+        if not sources:
+            sources = [str(self.config.auto_docs_dir)]
+
+        tools = [
+            {"type": "list_dir", "args": {"path": "string"}, "when": "User wants to know what files/folders are inside a directory."},
+            {"type": "find_files", "args": {"query": "string"}, "when": "User wants you to locate a file on the computer by name/keywords/pattern."},
+            {"type": "add_source", "args": {"path": "string"}, "when": "User asks to add a folder so it will be indexed going forward."},
+            {"type": "reindex", "args": {}, "when": "User asks to rebuild/reindex."},
+            {"type": "clear_chat", "args": {}, "when": "User asks to clear chat."},
+            {"type": "answer", "args": {}, "when": "Normal document Q&A (no local tool needed)."},
+        ]
+
+        controller_prompt = f"""You are the local AI controller for a Windows desktop document assistant.
+Your job: decide whether to call a LOCAL TOOL (filesystem or app control) or just answer.
+
+RULES:
+- Output ONLY JSON. No markdown. No extra text.
+- Choose the single best action.
+- If the user asks about folder contents OR gives a folder path, choose list_dir.
+- If the user asks you to locate a file anywhere on the computer, choose find_files.
+- If the user asks to add a folder to be indexed, choose add_source.
+- If none apply, choose answer.
+
+SECURITY / SCOPE:
+- allow_any_path = {str(allow_any).lower()}
+- base_dir = {base_dir}
+- configured_sources = {json.dumps(sources, ensure_ascii=False)}
+
+TOOLS:
+{json.dumps(tools, ensure_ascii=False)}
+
+Return schema:
+{{
+  "action": "<one of: list_dir|find_files|add_source|reindex|clear_chat|answer>",
+  "args": {{ ... }},
+  "user_visible": "optional short status line to show while executing"
+}}
+
+User message:
+{user_text}
+"""
+
+        # Ask the SAME local model (Ollama) to decide. We keep this fast (low tokens).
+        try:
+            raw = self.rag._ollama_generate(controller_prompt, num_predict=220)
+        except Exception:
+            return False
+
+        obj = self._extract_first_json(raw)
+        if not obj:
+            return False
+
+        action = str(obj.get("action", "")).strip()
+        args = obj.get("args", {}) if isinstance(obj.get("args", {}), dict) else {}
+        status = str(obj.get("user_visible", "")).strip()
+        if status:
+            self.ui.update_status(status)
+
+        # Execute actions
+        if action == "clear_chat":
+            self.ui.clear_chat()
+            self.ui.update_status("Ready")
+            return True
+
+        if action == "reindex":
+            self.ui.update_status("Rebuilding index…")
+            self._start_reindex_async()
+            return True
+
+        if action == "add_source":
+            p = str(args.get("path", "")).strip()
+            if not p:
+                return False
+            self.ui.update_status("Adding folder source…")
+            return self._handle_add_source(Path(p))
+
+        if action == "list_dir":
+            p = str(args.get("path", "")).strip()
+            if not p:
+                # fall back: try to extract a path from the user text
+                p = self._extract_windows_path(user_text) or ""
+            if not p:
+                return False
+            return self._handle_list_dir_request(p)
+
+        if action == "find_files":
+            q = str(args.get("query", "")).strip() or user_text
+            self.ui.update_status("Searching files…")
+            return self._handle_find_request(q)
+
+        # action == "answer" (or unknown): let normal pipeline handle it
+        return False
+
+    def _start_reindex_async(self):
+        """Kick off a background reindex using the existing WorkerThread."""
+        def task():
+            progress = lambda s: self._thread.progress.emit(s) if self._thread else None
+            progress("Collecting files…")
+            files = collect_auto_docs(self.config)
+            if not files:
+                progress("No files found to index.")
+                return False
+            progress(f"Indexing {len(files)} file(s)…")
+            self.rag.build_index(
+                files,
+                progress=progress,
+                chunk_size=self.config.chunk_size,
+                overlap=self.config.chunk_overlap,
+                enable_ocr=self.config.enable_ocr,
+                ocr_lang=self.config.ocr_lang,
+            )
+            return True
+
+        self._start_worker(task, on_ok=lambda _: self.ui.update_status("Ready"))
+
+    def _handle_add_source(self, folder: Path) -> bool:
+        """Persist a folder into app_config.ini as an extra source, then reindex."""
+        folder = _expand_path(str(folder))
+        if not folder.exists() or not folder.is_dir():
+            self.ui.append_assistant_message(f"That folder doesn’t exist: {folder}")
+            self.ui.update_status("Ready")
+            return True
+
+        # Scope restriction unless allow_any_path
+        if not self.config.allow_any_path:
+            try:
+                folder.resolve().relative_to(self.config.base_dir.resolve())
+            except Exception:
+                self.ui.append_assistant_message(
+                    "That folder is outside the allowed base directory.\n"
+                    "Either move it under the app folder, or set allow_any_path=true in app_config.ini."
+                )
+                self.ui.update_status("Ready")
+                return True
+
+        # Add to extra_sources and persist
+        extras = list(self.config.extra_sources or [])
+        sf = str(folder)
+        if sf not in extras:
+            extras.append(sf)
+            self.config.extra_sources = extras
+            # write back
+            ini = load_ini_with_backup(self.config_path)
+            if not ini.has_section("app"):
+                ini.add_section("app")
+            ini.set("app", "extra_sources", json.dumps(extras, ensure_ascii=False))
+            atomic_write_ini(self.config_path, ini)
+
+        self.ui.append_assistant_message(f"Added folder source: {folder}\nRebuilding index…")
+        self._start_reindex_async()
+        return True
 
     def on_send(self):
         q = self.ui.get_user_text()
@@ -1056,6 +1488,11 @@ class AppController(QWidget):
             if self._handle_pending_file_choice(q):
                 return
 
+        # Let the model decide whether to invoke a local tool (filesystem/app control)
+        if self._agent_route(q):
+            return
+
+        # Fallback deterministic handlers (paths/commands)
         if self._handle_path_message(q):
             return
 

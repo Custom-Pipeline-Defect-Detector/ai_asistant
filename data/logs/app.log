@@ -555,3 +555,10 @@
 2026-02-02 14:23:34,909 [INFO] RAGEngine initialized
 2026-02-02 14:25:23,300 [INFO] RAGEngine initialized
 2026-02-02 14:26:31,136 [INFO] RAGEngine initialized
+2026-02-02 14:37:08,086 [INFO] RAGEngine initialized
+2026-02-02 14:38:31,957 [INFO] RAGEngine initialized
+2026-02-02 14:38:38,562 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 14:38:39,350 [INFO] Use pytorch device_name: cuda
+2026-02-02 14:55:57,346 [INFO] RAGEngine initialized
+2026-02-02 14:57:56,990 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 14:57:57,781 [INFO] Use pytorch device_name: cuda
