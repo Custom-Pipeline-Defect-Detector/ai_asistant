@@ -617,3 +617,31 @@
 2026-02-02 18:39:53,724 [INFO] RAGEngine initialized
 2026-02-02 18:40:02,734 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
 2026-02-02 18:40:03,760 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:43:33,281 [INFO] RAGEngine initialized
+2026-02-02 18:43:36,932 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:43:37,729 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:44:41,332 [INFO] RAGEngine initialized
+2026-02-02 18:44:55,050 [INFO] RAGEngine initialized
+2026-02-02 18:44:58,344 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:44:59,173 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:45:23,122 [INFO] RAGEngine initialized
+2026-02-02 18:45:26,179 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:45:27,015 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:46:52,066 [INFO] RAGEngine initialized
+2026-02-02 18:46:56,278 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:46:57,145 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:53:06,787 [INFO] RAGEngine initialized
+2026-02-02 18:53:16,097 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:53:18,632 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:54:10,808 [INFO] RAGEngine initialized
+2026-02-02 18:54:17,304 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:54:18,103 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:55:01,608 [INFO] RAGEngine initialized
+2026-02-02 18:55:05,303 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:55:06,098 [INFO] Use pytorch device_name: cuda
+2026-02-02 18:55:58,541 [INFO] RAGEngine initialized
+2026-02-02 18:56:01,734 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 18:56:02,530 [INFO] Use pytorch device_name: cuda
+2026-02-02 19:03:36,150 [INFO] RAGEngine initialized
+2026-02-02 19:03:42,901 [INFO] Load pretrained SentenceTransformer: D:\offline_doc_assistant\models\embed
+2026-02-02 19:03:45,376 [INFO] Use pytorch device_name: cuda

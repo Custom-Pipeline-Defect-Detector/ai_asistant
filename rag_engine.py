@@ -121,7 +121,7 @@ class RAGEngine:
         log_dir: Path,
         memory_dir: Path,
         ollama_base_url: str = "http://localhost:11434",
-        ollama_model: str = "phi4-mini-reasoning:latest",
+        ollama_model: str = "mistral:latest",
         ollama_timeout_s: int = 600,
         generation_temperature: float = 0.2,
         generation_top_p: float = 0.9,
