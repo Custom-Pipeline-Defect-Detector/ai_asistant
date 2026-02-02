@@ -77,8 +77,13 @@ def collect_auto_docs() -> list[str]:
         return []
     docs: list[str] = []
     for p in AUTO_DOCS_DIR.rglob("*"):
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS:
-            docs.append(str(p))
+        if not p.is_file():
+            continue
+        # Skip temporary office files (e.g., ~\$ doc names)
+        if p.name.startswith("~$"):
+            continue
+        # If extension is supported, include it; otherwise include anyway to attempt conversion
+        docs.append(str(p))
     return docs
 
 
@@ -92,8 +97,11 @@ class AppController(QWidget):
         super().__init__()
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
         # Force OCR ON always (and bilingual by default)
-        os.environ["ENABLE_OCR"] = "1"
         os.environ.setdefault("OCR_LANG", "auto")  # or "eng+chi_sim" if you prefer fixed
+
+        # Ensure OCR and LibreOffice conversion are enabled by default for full indexing
+        os.environ.setdefault("ENABLE_OCR", "1")
+        os.environ.setdefault("ENABLE_LIBREOFFICE", "1")
 
 
         self.setWindowFlags(
@@ -451,8 +459,8 @@ class AppController(QWidget):
             QMessageBox.warning(
                 self,
                 "No documents found",
-                f"No supported documents found in:\n{AUTO_DOCS_DIR}\n\n"
-                f"Supported: {', '.join(sorted(SUPPORTED_EXTS))}",
+                f"No documents found in:\n{AUTO_DOCS_DIR}\n\n"
+                f"Place files of any type into this folder to index them.",
             )
             return
 
@@ -466,9 +474,22 @@ class AppController(QWidget):
                 return
 
         def do_build():
+            # Read chunk sizing from environment; default to full document (0) for chunk_size and 0 for overlap
+            cs_env = os.environ.get("CHUNK_SIZE", "").strip()
+            ov_env = os.environ.get("CHUNK_OVERLAP", "").strip()
+            try:
+                chunk_size_val = int(cs_env) if cs_env else 0
+            except Exception:
+                chunk_size_val = 0
+            try:
+                overlap_val = int(ov_env) if ov_env else 0
+            except Exception:
+                overlap_val = 0
             return self.rag.build_index(
                 files,
                 progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
+                chunk_size=chunk_size_val,
+                overlap=overlap_val,
             )
 
         def on_ok(res):
@@ -511,10 +532,16 @@ class AppController(QWidget):
             self.ui.begin_assistant_stream()
 
             def do_answer_stream():
+                # Use configurable TOP_K for retrieval; default to 6 for fast answering
+                top_k_env = os.environ.get("TOP_K", "").strip()
+                try:
+                    top_k_val = int(top_k_env) if top_k_env else 6
+                except Exception:
+                    top_k_val = 6
                 return self.rag.answer_question_stream(
                     q,
                     progress=lambda s: self._thread.progress.emit(s) if self._thread else None,
-                    top_k=100,
+                    top_k=top_k_val,
                     on_token=lambda tok: self._thread.partial.emit(tok) if self._thread else None,
                 )
 
