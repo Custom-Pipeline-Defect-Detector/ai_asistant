@@ -10,7 +10,7 @@ from difflib import get_close_matches
 from configparser import ConfigParser
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 # --- ADD THIS near the top of app.py (imports) ---
 
@@ -1421,6 +1421,85 @@ User message:
         # action == "answer" (or unknown): let normal pipeline handle it
         return False
 
+    def _indexed_doc_tokens(self) -> Set[str]:
+        docs = self.rag.get_indexed_docs()
+        tokens: Set[str] = set()
+        for doc in docs:
+            p = Path(doc)
+            if p.name:
+                tokens.add(p.name.lower())
+            if p.stem:
+                tokens.add(p.stem.lower())
+        return tokens
+
+    def _has_indexed_doc_reference(self, user_text: str) -> bool:
+        if not user_text:
+            return False
+        tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9_.-]+", user_text)}
+        if not tokens:
+            return False
+        indexed_tokens = self._indexed_doc_tokens()
+        return bool(tokens & indexed_tokens)
+
+    def _looks_like_filename(self, user_text: str) -> bool:
+        supported_exts = {ext.lower().lstrip(".") for ext in (self.config.supported_exts or [])}
+        if not supported_exts:
+            return False
+        pattern = r"\b[\w\-.]+\.(?:" + "|".join(re.escape(ext) for ext in supported_exts) + r")\b"
+        return bool(re.search(pattern, user_text, flags=re.IGNORECASE))
+
+    def _should_attempt_agent_route(self, user_text: str) -> bool:
+        if not getattr(self.config, "agent_enable_control", False):
+            return False
+        raw = (user_text or "").strip()
+        if not raw:
+            return False
+
+        # If the user references an indexed doc, treat it as a content question.
+        if self._has_indexed_doc_reference(raw):
+            return False
+
+        lowered = raw.lower()
+        if raw.startswith("/"):
+            return True
+        if self._extract_windows_path(raw):
+            return True
+        if re.search(r"\b(add|index|reindex|rebuild|clear)\b", lowered):
+            return True
+        if re.search(r"\b(find|locate|search)\b.*\b(file|document|doc)\b", lowered):
+            return True
+        if re.search(r"\b(list|show|open|browse)\b.*\b(folder|directory|files?|contents?)\b", lowered):
+            return True
+        if self._looks_like_filename(raw):
+            return True
+
+        return False
+
+    def _handle_indexed_docs_query(self, user_text: str) -> bool:
+        raw = (user_text or "").strip()
+        if not raw:
+            return False
+        lowered = raw.lower()
+        if not re.search(r"\b(list|show|what)\b", lowered):
+            return False
+        if not re.search(r"\b(indexed|index)\b", lowered):
+            return False
+        if not re.search(r"\b(documents|docs|files)\b", lowered):
+            return False
+
+        docs = self.rag.get_indexed_docs()
+        if not docs:
+            self.ui.append_assistant_message("No documents are indexed yet. Add files or folders to start indexing.")
+            self.ui.update_status("Ready")
+            return True
+
+        lines = [f"Indexed documents ({len(docs)}):", ""]
+        for doc in docs:
+            lines.append(f"• {doc}")
+        self.ui.append_assistant_message("\n".join(lines))
+        self.ui.update_status("Ready")
+        return True
+
     def _start_reindex_async(self):
         """Kick off a background reindex using the existing WorkerThread."""
         def task():
@@ -1494,12 +1573,15 @@ User message:
             if self._handle_pending_file_choice(q):
                 return
 
-        # Let the model decide whether to invoke a local tool (filesystem/app control)
-        if self._agent_route(q):
-            return
-
         # Fallback deterministic handlers (paths/commands)
         if self._handle_path_message(q):
+            return
+
+        if self._handle_indexed_docs_query(q):
+            return
+
+        # Let the model decide whether to invoke a local tool (filesystem/app control)
+        if self._should_attempt_agent_route(q) and self._agent_route(q):
             return
 
         def _after_index(_):
