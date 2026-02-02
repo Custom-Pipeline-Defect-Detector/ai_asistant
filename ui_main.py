@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 import os
-from PyQt5.QtCore import QEasingCurve, QEvent, QPropertyAnimation, Qt, QTimer
+from PyQt5.QtCore import QEasingCurve, QEvent, QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -279,6 +279,8 @@ class SettingsDialog(QDialog):
 
 
 class MainWindow(QWidget):
+    files_dropped = pyqtSignal(list)
+
     def __init__(self):
         super().__init__()
         self._anims = []
@@ -304,6 +306,7 @@ class MainWindow(QWidget):
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
+        self.setAcceptDrops(True)
 
         self._build_ui()
 
@@ -328,6 +331,35 @@ class MainWindow(QWidget):
                 self.send_button.click()
                 return True
         return super().eventFilter(obj, event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        paths = []
+        for url in event.mimeData().urls():
+            local = url.toLocalFile()
+            if local:
+                paths.append(local)
+
+        if paths:
+            self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+            return
+        event.ignore()
 
     # ---------- Logo sizing ----------
     def _apply_logo_size(self):

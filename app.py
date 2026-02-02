@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import traceback
+from difflib import get_close_matches
 from configparser import ConfigParser
 from datetime import datetime
 from pathlib import Path
@@ -205,6 +206,7 @@ class AppController(QWidget):
         self._resize_edge = None
         self._press_pos = None
         self._start_geom = None
+        self._pending_file_choices: List[Path] = []
 
         # =========================
         # Child UI (MainWindow)
@@ -811,6 +813,13 @@ class AppController(QWidget):
         self.ui.append_user_message(q)
         self.ui.update_sources_text("")
         self.ui.update_status("Preparing…")
+
+        if self._pending_file_choices:
+            if self._handle_pending_file_choice(q):
+                return
+
+        if self._handle_path_message(q):
+            return
 
         def _after_index(_):
             self.ui.begin_assistant_stream()
