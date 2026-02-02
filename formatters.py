@@ -9,6 +9,10 @@ MD_TABLE_RE = re.compile(
     r"(^\|.+\|\s*$\n^\|[-:\s|]+\|\s*$\n(?:^\|.*\|\s*$\n?)+)",
     re.MULTILINE,
 )
+REASONING_BLOCK_RE = re.compile(r"<(reasoning|think)>([\s\S]*?)</\1>", re.IGNORECASE)
+REASONING_PREFIX_RE = re.compile(
+    r"(?is)^\s*(reasoning|analysis)\s*:\s*(.+?)(\n\s*(answer|final)\s*:|\Z)"
+)
 
 
 def esc_html(s: str) -> str:
@@ -73,6 +77,37 @@ def to_rich_html(text: str) -> str:
     NOTE: CSV/JSON are handled in UI via QTableWidget (sheet), not here.
     """
     out = text
+
+    def _format_reasoning_block(raw: str) -> str:
+        content = esc_html(raw.strip()).replace("\n", "<br/>")
+        return (
+            "<details style='margin-top:8px; margin-bottom:8px;"
+            " border:1px solid rgba(255,255,255,0.12); border-radius:12px;"
+            " padding:8px 10px; background:rgba(255,255,255,0.04);'>"
+            "<summary style='cursor:pointer; font-weight:800; color:#eef3ff;'>Reasoning</summary>"
+            f"<div style='margin-top:6px; color:#dbe7ff;'>{content}</div>"
+            "</details>"
+        )
+
+    # Wrap explicit reasoning tags into collapsible cards.
+    def _reasoning_repl(m):
+        return _format_reasoning_block(m.group(2))
+
+    out = re.sub(REASONING_BLOCK_RE, _reasoning_repl, out)
+
+    # Wrap leading "Reasoning:" blocks into collapsible cards when present.
+    match = REASONING_PREFIX_RE.match(out)
+    if match:
+        reasoning = match.group(2)
+        remainder = out[match.end() :].lstrip()
+        remainder_label = match.group(4)
+        prefix = _format_reasoning_block(reasoning)
+        if remainder:
+            if remainder_label:
+                remainder = f"{remainder_label.capitalize()}: {remainder}"
+            out = f"{prefix}\n{remainder}"
+        else:
+            out = prefix
 
     # Convert markdown tables to simple HTML table (for chat bubble, optional)
     def _table_repl(m):
