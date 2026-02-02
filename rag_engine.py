@@ -876,6 +876,7 @@ class RAGEngine:
         if allow_control and agent_enable_control:
             system_rules += (
                 "\nCONTROL ACTIONS:\n"
+                "- If the user asks you to operate the app (settings, sources, indexing), decide whether to take control and emit control actions.\n"
                 "- If you need to change config or indexing, respond with ONLY a control block and no answer.\n"
                 "- Control block syntax must be exactly:\n"
                 "  <CONTROL>\n"

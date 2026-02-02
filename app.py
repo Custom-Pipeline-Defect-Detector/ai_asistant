@@ -2,6 +2,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import shutil
 import sys
 import traceback
 from configparser import ConfigParser
@@ -22,6 +23,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import (
     QApplication,
+    QFileDialog,
     QMessageBox,
     QWidget,
     QToolButton,
@@ -290,6 +292,7 @@ class AppController(QWidget):
         self.ui.set_logo_height(self.config.logo_height_px)
 
         self.ui.send_button.clicked.connect(self.on_send)
+        self.ui.add_file_button.clicked.connect(self.on_add_files)
 
         self._update_status_ready()
         self._apply_layout()
@@ -931,6 +934,60 @@ class AppController(QWidget):
             )
 
         self._ensure_index(after_ok=_after_index)
+
+    def _copy_to_auto_docs(self, src: Path) -> Path:
+        dest_dir = self.config.auto_docs_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            if src.resolve() == (dest_dir / src.name).resolve():
+                return dest_dir / src.name
+        except Exception:
+            pass
+
+        dest = dest_dir / src.name
+        if dest.exists():
+            stem = src.stem
+            suffix = src.suffix
+            counter = 1
+            while True:
+                candidate = dest_dir / f"{stem}_{counter}{suffix}"
+                if not candidate.exists():
+                    dest = candidate
+                    break
+                counter += 1
+
+        shutil.copy2(src, dest)
+        return dest
+
+    def on_add_files(self):
+        if self._busy:
+            return
+
+        start_dir = str(self.config.base_dir)
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Add files to index", start_dir, "All files (*.*)")
+        if not file_paths:
+            return
+
+        copied: List[Path] = []
+        failures: List[str] = []
+
+        for file_path in file_paths:
+            try:
+                copied.append(self._copy_to_auto_docs(Path(file_path)))
+            except Exception as exc:
+                failures.append(f"{file_path}: {exc}")
+
+        if failures:
+            QMessageBox.warning(
+                self,
+                "File copy warning",
+                "Some files could not be added:\n\n" + "\n".join(failures[:10]),
+            )
+
+        if copied:
+            self.ui.update_status(f"Added {len(copied)} file(s). Indexing new files…")
+            self._ensure_index()
 
     def on_settings(self):
         ini = self.rag.load_ini()
