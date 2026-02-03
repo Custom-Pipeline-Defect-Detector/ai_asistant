@@ -2,9 +2,7 @@ import json
 import logging
 import re
 import hashlib
-import os
-from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Any
@@ -22,50 +20,10 @@ from doc_loaders import load_documents, LoadReportEntry
 
 
 @dataclass
-class ChunkLite:
+class ChunkMetadata:
     chunk_id: int
-    doc_id: str
     source: str
-    summary: str
-    file: str
-    idx: int
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ChunkLite":
-        base = {
-            "chunk_id": data.get("chunk_id"),
-            "doc_id": data.get("doc_id"),
-            "source": data.get("source"),
-            "summary": data.get("summary"),
-            "file": data.get("file"),
-            "idx": data.get("idx"),
-        }
-        missing = [k for k, v in base.items() if v is None]
-        if missing:
-            raise RAGEngineError(f"Invalid chunk entry missing {missing}")
-        extra = {k: v for k, v in data.items() if k not in base}
-        return cls(
-            chunk_id=int(base["chunk_id"]),
-            doc_id=str(base["doc_id"]),
-            source=str(base["source"]),
-            summary=str(base["summary"]),
-            file=str(base["file"]),
-            idx=int(base["idx"]),
-            metadata=extra,
-        )
-
-    def to_dict(self) -> Dict[str, Any]:
-        payload = {
-            "chunk_id": self.chunk_id,
-            "doc_id": self.doc_id,
-            "source": self.source,
-            "summary": self.summary,
-            "file": self.file,
-            "idx": self.idx,
-        }
-        payload.update(self.metadata)
-        return payload
+    text: str
 
 
 class RAGEngineError(Exception):
@@ -183,8 +141,6 @@ class RAGEngine:
         scanned_pdf_min_chars: int = 60,
         pdf_dpi: int = 250,
         libreoffice_timeout_s: int = 90,
-        chunk_summary_max_chars: int = 300,
-        doc_chunk_cache_size: int = 16,
     ):
         self.base_dir = base_dir
         self.embed_model_dir = embed_model_dir
@@ -212,22 +168,18 @@ class RAGEngine:
         self.scanned_pdf_min_chars = scanned_pdf_min_chars
         self.pdf_dpi = pdf_dpi
         self.libreoffice_timeout_s = libreoffice_timeout_s
-        self.chunk_summary_max_chars = chunk_summary_max_chars
-        self.doc_chunk_cache_size = doc_chunk_cache_size
 
         self.index_path = self.index_dir / "index.faiss"
         self.chunks_path = self.index_dir / "chunks.json"
         self.docs_path = self.index_dir / "docs.json"
         self.manifest_path = self.index_dir / "manifest.json"
-        self.doc_chunks_dir = self.index_dir / "doc_chunks"
 
         self._embedder: Optional[SentenceTransformer] = None
         self._faiss: Optional[faiss.Index] = None
-        self._chunks: List[ChunkLite] = []
+        self._chunks: List[ChunkMetadata] = []
         self._active_ids: Optional[set[int]] = None  # optional fast filter
         # fast lookup for chunk metadata by chunk_id (populated on load)
-        self._chunk_map: Optional[Dict[int, ChunkLite]] = None
-        self._doc_chunks_cache: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+        self._chunk_map: Optional[Dict[int, ChunkMetadata]] = None
 
         # Persistent memory
         self.memory_dir = memory_dir
@@ -296,8 +248,6 @@ class RAGEngine:
         scanned_pdf_min_chars: int,
         pdf_dpi: int,
         libreoffice_timeout_s: int,
-        chunk_summary_max_chars: int,
-        doc_chunk_cache_size: int,
     ) -> None:
         index_changed = index_dir != self.index_dir
         memory_changed = memory_dir != self.memory_dir
@@ -327,14 +277,11 @@ class RAGEngine:
         self.scanned_pdf_min_chars = scanned_pdf_min_chars
         self.pdf_dpi = pdf_dpi
         self.libreoffice_timeout_s = libreoffice_timeout_s
-        self.chunk_summary_max_chars = chunk_summary_max_chars
-        self.doc_chunk_cache_size = doc_chunk_cache_size
 
         self.index_path = self.index_dir / "index.faiss"
         self.chunks_path = self.index_dir / "chunks.json"
         self.docs_path = self.index_dir / "docs.json"
         self.manifest_path = self.index_dir / "manifest.json"
-        self.doc_chunks_dir = self.index_dir / "doc_chunks"
 
         if memory_changed:
             self.memory_dir = memory_dir
@@ -349,7 +296,6 @@ class RAGEngine:
             self._chunks = []
             self._active_ids = None
             self._chunk_map = None
-            self._doc_chunks_cache = OrderedDict()
 
     def load_ini(self) -> Dict[str, Dict[str, str]]:
         config = load_ini_with_backup(self.ini_path, default_assistant_config())
@@ -423,21 +369,10 @@ class RAGEngine:
                     p.unlink()
             except Exception:
                 pass
-        if self.doc_chunks_dir.exists():
-            for p in self.doc_chunks_dir.glob("*.json"):
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
-            try:
-                self.doc_chunks_dir.rmdir()
-            except Exception:
-                pass
         self._faiss = None
         self._chunks = []
         self._active_ids = None
         self._chunk_map = None
-        self._doc_chunks_cache = OrderedDict()
 
     # ---------- manifest ----------
     def _load_manifest(self) -> Dict[str, Any]:
@@ -472,11 +407,11 @@ class RAGEngine:
         return h.hexdigest()
 
     # ---------- index IO ----------
-    def _save_index(self, index: faiss.Index, chunks: List[ChunkLite], docs: List[str]):
+    def _save_index(self, index: faiss.Index, chunks: List[ChunkMetadata], docs: List[str]):
         self.index_dir.mkdir(parents=True, exist_ok=True)
         faiss.write_index(index, str(self.index_path))
         self.chunks_path.write_text(
-            json.dumps([c.to_dict() for c in chunks], ensure_ascii=False, indent=2),
+            json.dumps([asdict(c) for c in chunks], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         self.docs_path.write_text(json.dumps(docs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -487,7 +422,8 @@ class RAGEngine:
         if not self.index_exists():
             raise RAGEngineError("Index not found. Please build the index first.")
         self._faiss = faiss.read_index(str(self.index_path))
-        self._chunks = self._load_chunk_lites()
+        raw = json.loads(self.chunks_path.read_text(encoding="utf-8"))
+        self._chunks = [ChunkMetadata(**c) for c in raw]
 
         # Build active id set from manifest (fast filtering)
         manifest = self._load_manifest()
@@ -501,123 +437,6 @@ class RAGEngine:
         # Build chunk map for fast retrieval lookup
         self._chunk_map = {c.chunk_id: c for c in self._chunks}
 
-    @staticmethod
-    def _normalize_path_for_id(path: str) -> str:
-        resolved = Path(path).expanduser().resolve()
-        normalized = resolved.as_posix()
-        if os.name == "nt":
-            normalized = normalized.lower()
-        return normalized
-
-    def _doc_id_for_source(self, path: str) -> str:
-        normalized = self._normalize_path_for_id(path)
-        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def summarize_chunk(text: str, max_len: int = 300) -> str:
-        cleaned = re.sub(r"\s+", " ", (text or "").strip())
-        if max_len <= 0:
-            return cleaned
-        if len(cleaned) <= max_len:
-            return cleaned
-        if max_len == 1:
-            return "…"
-        trimmed = cleaned[: max_len - 1]
-        return trimmed + "…"
-
-    def _cache_doc_chunks(self, doc_id: str, chunks: List[Dict[str, Any]]) -> None:
-        if self.doc_chunk_cache_size <= 0:
-            return
-        if doc_id in self._doc_chunks_cache:
-            self._doc_chunks_cache.move_to_end(doc_id)
-        self._doc_chunks_cache[doc_id] = chunks
-        while len(self._doc_chunks_cache) > self.doc_chunk_cache_size:
-            self._doc_chunks_cache.popitem(last=False)
-
-    def _load_doc_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
-        if doc_id in self._doc_chunks_cache:
-            self._doc_chunks_cache.move_to_end(doc_id)
-            return self._doc_chunks_cache[doc_id]
-        path = self.doc_chunks_dir / f"{doc_id}.json"
-        if not path.exists():
-            return []
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            chunks = data.get("chunks") or []
-        except Exception:
-            chunks = []
-        self._cache_doc_chunks(doc_id, chunks)
-        return chunks
-
-    def _resolve_chunk_text(self, chunk: ChunkLite) -> str:
-        chunks = self._load_doc_chunks(chunk.doc_id)
-        if 0 <= chunk.idx < len(chunks):
-            candidate = chunks[chunk.idx]
-            if candidate.get("chunk_id") == chunk.chunk_id:
-                return candidate.get("text", "")
-        for item in chunks:
-            if item.get("chunk_id") == chunk.chunk_id:
-                return item.get("text", "")
-        return ""
-
-    def _write_doc_chunks(self, doc_id: str, source: str, chunks: List[Dict[str, Any]]) -> None:
-        self.doc_chunks_dir.mkdir(parents=True, exist_ok=True)
-        payload = {"doc_id": doc_id, "source": source, "chunks": chunks}
-        path = self.doc_chunks_dir / f"{doc_id}.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        if doc_id in self._doc_chunks_cache:
-            self._doc_chunks_cache.pop(doc_id, None)
-
-    def _migrate_legacy_chunks(self, raw: List[Dict[str, Any]]) -> None:
-        grouped: Dict[str, Dict[str, Any]] = {}
-        for entry in raw:
-            if "text" not in entry:
-                continue
-            source = str(entry.get("source") or "")
-            text = str(entry.get("text") or "")
-            chunk_id = int(entry.get("chunk_id"))
-            doc_id = self._doc_id_for_source(source)
-            doc_info = grouped.setdefault(doc_id, {"source": source, "chunks": []})
-            doc_info["chunks"].append({"chunk_id": chunk_id, "text": text})
-
-        chunk_lites: List[ChunkLite] = []
-        for doc_id, info in grouped.items():
-            source = info["source"]
-            chunks = info["chunks"]
-            self._write_doc_chunks(doc_id, source, chunks)
-            for idx, item in enumerate(chunks):
-                summary = self.summarize_chunk(item.get("text", ""), self.chunk_summary_max_chars)
-                chunk_lites.append(
-                    ChunkLite(
-                        chunk_id=int(item["chunk_id"]),
-                        doc_id=doc_id,
-                        source=source,
-                        summary=summary,
-                        file=f"doc_chunks/{doc_id}.json",
-                        idx=idx,
-                    )
-                )
-
-        self.chunks_path.write_text(
-            json.dumps([c.to_dict() for c in chunk_lites], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-        manifest = self._load_manifest()
-        files_meta = manifest.get("files", {}) or {}
-        for path, meta in files_meta.items():
-            if not meta.get("doc_id"):
-                meta["doc_id"] = self._doc_id_for_source(path)
-            files_meta[path] = meta
-        manifest["files"] = files_meta
-        self._save_manifest(manifest)
-
-    def _load_chunk_lites(self) -> List[ChunkLite]:
-        raw = json.loads(self.chunks_path.read_text(encoding="utf-8"))
-        if any("text" in entry for entry in raw):
-            self._migrate_legacy_chunks(raw)
-            raw = json.loads(self.chunks_path.read_text(encoding="utf-8"))
-        return [ChunkLite.from_dict(c) for c in raw]
     # ---------- chunking ----------
     @staticmethod
     def _chunk_text(text: str, chunk_size: int = 1100, overlap: int = 220) -> List[str]:
@@ -695,10 +514,6 @@ class RAGEngine:
         manifest = self._load_manifest()
         files_meta: Dict[str, Any] = manifest.get("files", {}) or {}
         next_chunk_id = int(manifest.get("next_chunk_id", 0))
-        for path, meta in list(files_meta.items()):
-            if not meta.get("doc_id"):
-                meta["doc_id"] = self._doc_id_for_source(path)
-                files_meta[path] = meta
 
         existing_paths_set = set(files_meta.keys())
         current_paths_set = set(file_paths)
@@ -722,11 +537,12 @@ class RAGEngine:
 
         # Load or initialize FAISS + chunks
         index: Optional[faiss.Index] = None
-        chunks: List[ChunkLite] = []
+        chunks: List[ChunkMetadata] = []
         if self.index_path.exists() and self.chunks_path.exists():
             progress("Loading existing index…")
             index = faiss.read_index(str(self.index_path))
-            chunks = self._load_chunk_lites()
+            raw = json.loads(self.chunks_path.read_text(encoding="utf-8"))
+            chunks = [ChunkMetadata(**c) for c in raw]
         else:
             index = None
             chunks = []
@@ -751,26 +567,11 @@ class RAGEngine:
                 # mark inactive (we keep record for debug)
                 meta["active"] = False
                 meta["chunk_ids"] = []
-                if not meta.get("doc_id"):
-                    meta["doc_id"] = self._doc_id_for_source(p)
                 files_meta[p] = meta
 
             if removed_chunk_ids:
                 idsel = faiss.IDSelectorBatch(np.array(removed_chunk_ids, dtype=np.int64))
                 index.remove_ids(idsel)
-                removed_ids = set(removed_chunk_ids)
-                chunks = [c for c in chunks if c.chunk_id not in removed_ids]
-
-            for p in remove_paths:
-                meta = files_meta.get(p) or {}
-                doc_id = meta.get("doc_id") or self._doc_id_for_source(p)
-                doc_path = self.doc_chunks_dir / f"{doc_id}.json"
-                if doc_path.exists():
-                    try:
-                        doc_path.unlink()
-                    except Exception:
-                        pass
-                self._doc_chunks_cache.pop(doc_id, None)
 
         # Extract+chunk only changed/new files
         progress(f"Loading documents (changed/new: {len(changed_paths)})…")
@@ -793,46 +594,29 @@ class RAGEngine:
         failed = attempted - succeeded
 
         # Build new chunks for changed/new docs
-        new_chunks: List[ChunkLite] = []
+        new_chunks: List[ChunkMetadata] = []
         new_chunk_ids: List[int] = []
-        new_chunk_texts: List[str] = []
         per_file_chunk_ids: Dict[str, List[int]] = {}
-        per_file_doc_ids: Dict[str, str] = {}
 
         for doc_i, d in enumerate(docs, start=1):
             progress(f"Chunking ({doc_i}/{len(docs)})…")
             source = d["source"]
-            doc_id = self._doc_id_for_source(source)
-            per_file_doc_ids[source] = doc_id
             chs = self._chunk_text(d["text"], chunk_size=chunk_size, overlap=overlap)
             ids_for_file: List[int] = []
-            doc_chunks: List[Dict[str, Any]] = []
-            for idx, ch in enumerate(chs):
+            for ch in chs:
                 cid = next_chunk_id
                 next_chunk_id += 1
                 ids_for_file.append(cid)
-                summary = self.summarize_chunk(ch, self.chunk_summary_max_chars)
-                new_chunks.append(
-                    ChunkLite(
-                        chunk_id=cid,
-                        doc_id=doc_id,
-                        source=source,
-                        summary=summary,
-                        file=f"doc_chunks/{doc_id}.json",
-                        idx=idx,
-                    )
-                )
+                new_chunks.append(ChunkMetadata(chunk_id=cid, source=source, text=ch))
                 new_chunk_ids.append(cid)
-                new_chunk_texts.append(ch)
-                doc_chunks.append({"chunk_id": cid, "text": ch})
             per_file_chunk_ids[source] = ids_for_file
-            self._write_doc_chunks(doc_id, source, doc_chunks)
 
         # Embed only new chunks
         if new_chunks:
             progress("Embedding new chunks…")
+            texts = [c.text for c in new_chunks]
             emb = self._embedder.encode(
-                new_chunk_texts,
+                texts,
                 show_progress_bar=False,
                 convert_to_numpy=True,
                 batch_size=int(self.embed_batch_size),
@@ -860,7 +644,6 @@ class RAGEngine:
             meta.update(fp)
             meta["active"] = True
             meta["chunk_ids"] = per_file_chunk_ids.get(p, [])
-            meta["doc_id"] = per_file_doc_ids.get(p) or meta.get("doc_id") or self._doc_id_for_source(p)
             meta["last_indexed_at"] = datetime.now().isoformat(timespec="seconds")
 
             # store extractor report snippet if available
@@ -879,8 +662,6 @@ class RAGEngine:
             meta["active"] = False
             meta["deleted_at"] = datetime.now().isoformat(timespec="seconds")
             meta["chunk_ids"] = []
-            if not meta.get("doc_id"):
-                meta["doc_id"] = self._doc_id_for_source(p)
             files_meta[p] = meta
 
         manifest["files"] = files_meta
@@ -917,7 +698,7 @@ class RAGEngine:
             },
         }
 
-    def retrieve(self, query: str, top_k: int = 6) -> List[Tuple[ChunkLite, float]]:
+    def retrieve(self, query: str, top_k: int = 6) -> List[Tuple[ChunkMetadata, float]]:
         self._load_embedder()
         self._load_index()
 
@@ -930,13 +711,13 @@ class RAGEngine:
 
         # Build chunk_id -> metadata index (fast)
         # Use cached map to avoid rebuilding on every query
-        chunk_map: Dict[int, ChunkLite] = self._chunk_map or {}
+        chunk_map: Dict[int, ChunkMetadata] = self._chunk_map or {}
         # Fallback in case chunk_map is missing
         if not chunk_map and self._chunks:
             chunk_map = {c.chunk_id: c for c in self._chunks}
             self._chunk_map = chunk_map
 
-        results: List[Tuple[ChunkLite, float]] = []
+        results: List[Tuple[ChunkMetadata, float]] = []
         active = self._active_ids
 
         for cid, score in zip(ids[0].tolist(), scores[0].tolist()):
@@ -1002,7 +783,7 @@ class RAGEngine:
     def _build_prompt(
         self,
         question: str,
-        retrieved: List[Tuple[ChunkLite, float]],
+        retrieved: List[Tuple[ChunkMetadata, float]],
         ini: Dict[str, Dict[str, str]],
         chat_summary: str,
         recent_chat: List[Dict[str, str]],
@@ -1012,8 +793,7 @@ class RAGEngine:
         ctx_lines = []
         sources = []
         for i, (chunk, score) in enumerate(retrieved, start=1):
-            full_text = self._resolve_chunk_text(chunk) or chunk.summary
-            ctx_lines.append(f"[{i}] Source: {Path(chunk.source).name}\n{full_text}\n")
+            ctx_lines.append(f"[{i}] Source: {Path(chunk.source).name}\n{chunk.text}\n")
             sources.append(f"[{i}] {Path(chunk.source).name}#chunk_{chunk.chunk_id} score={score:.3f}")
 
         context = "\n".join(ctx_lines).strip()
