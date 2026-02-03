@@ -73,6 +73,8 @@ class AppConfig:
     hnsw_m: int
     hnsw_ef_construction: int
     hnsw_ef_search: int
+    chunk_summary_max_chars: int
+    doc_chunk_cache_size: int
     retrieval_top_k: int
     retrieval_min_score: float
     retrieval_rerank: bool
@@ -127,6 +129,8 @@ def default_app_config(base_dir: Path) -> Dict[str, Dict[str, str]]:
             "hnsw_m": "32",
             "hnsw_ef_construction": "200",
             "hnsw_ef_search": "64",
+            "chunk_summary_max_chars": "300",
+            "doc_chunk_cache_size": "16",
         },
         "retrieval": {
             "top_k": "6",
@@ -320,6 +324,8 @@ def load_app_config(path: Path) -> AppConfig:
     hnsw_m = _read_int(config, "index", "hnsw_m", 32)
     hnsw_ef_construction = _read_int(config, "index", "hnsw_ef_construction", 200)
     hnsw_ef_search = _read_int(config, "index", "hnsw_ef_search", 64)
+    chunk_summary_max_chars = _read_int(config, "index", "chunk_summary_max_chars", 300)
+    doc_chunk_cache_size = _read_int(config, "index", "doc_chunk_cache_size", 16)
 
     retrieval_top_k = _read_int(config, "retrieval", "top_k", 6)
     retrieval_min_score = _read_float(config, "retrieval", "min_score", 0.0)
@@ -383,6 +389,8 @@ def load_app_config(path: Path) -> AppConfig:
         hnsw_m=hnsw_m,
         hnsw_ef_construction=hnsw_ef_construction,
         hnsw_ef_search=hnsw_ef_search,
+        chunk_summary_max_chars=chunk_summary_max_chars,
+        doc_chunk_cache_size=doc_chunk_cache_size,
         retrieval_top_k=retrieval_top_k,
         retrieval_min_score=retrieval_min_score,
         retrieval_rerank=retrieval_rerank,
@@ -431,6 +439,8 @@ APP_CONFIG_SCHEMA: Dict[str, Dict[str, str]] = {
         "hnsw_m": "int",
         "hnsw_ef_construction": "int",
         "hnsw_ef_search": "int",
+        "chunk_summary_max_chars": "int",
+        "doc_chunk_cache_size": "int",
     },
     "retrieval": {
         "top_k": "int",
