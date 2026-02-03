@@ -139,7 +139,7 @@ def default_app_config(base_dir: Path) -> Dict[str, Dict[str, str]]:
         },
         "ollama": {
             "base_url": "http://localhost:11434",
-            "model": "qwen2.5:7b-instruct",
+            "model": "mistral:latest",
             "timeout_s": "600",
         },
         "generation": {
