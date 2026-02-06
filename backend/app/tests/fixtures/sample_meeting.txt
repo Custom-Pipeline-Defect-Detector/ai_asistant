@@ -1,0 +1,5 @@
+Meeting Minutes
+Project: AL-1001 Automation Line
+Customer: Nanjing Aline Automation Company
+Action: Engineer to verify sensor wiring by 2024-10-01.
+Issue: Conveyor vibration observed. Severity: high.
